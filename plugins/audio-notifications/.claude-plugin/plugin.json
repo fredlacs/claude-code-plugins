@@ -1,0 +1,29 @@
+{
+  "name": "audio-notifications",
+  "description": "macOS audio notifications for Claude Code - speaks notification messages aloud",
+  "version": "1.0.0",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/validate-dependencies.sh",
+            "description": "Validate uv installation and Python version requirements"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 src/main.py",
+            "description": "Speak notification messages using macOS text-to-speech"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "freds-claude-code-plugins",
+  "owner": {
+    "name": "fred"
+  },
+  "plugins": [
+    {
+      "name": "audio-notifications",
+      "source": "./plugins/audio-notifications",
+      "description": "audio notifications for Claude Code on macOS"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+__pycache__/
+
+# Ephemeral agent coordination files
+.agent-tasks/
