@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 src/main.py",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/speak-notification.sh",
             "description": "Speak notification messages using macOS text-to-speech"
           }
         ]
