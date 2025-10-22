@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-manager": {
+      "command": "uv",
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "src/server.py"],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[project]
+name = "agent-manager"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.12.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=0.25.2",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: Integration tests requiring real claude process (deselect with '-m \"not integration\"')",
+]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

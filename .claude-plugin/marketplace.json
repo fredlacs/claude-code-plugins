@@ -8,6 +8,11 @@
       "name": "audio-notifications",
       "source": "./plugins/audio-notifications",
       "description": "audio notifications for Claude Code on macOS"
+    },
+    {
+      "name": "async-worker-manager",
+      "source": "./plugins/async-worker-manager",
+      "description": "async worker manager"
     }
   ]
 }

@@ -1,0 +1,10 @@
+{
+  "name": "async-worker-manager",
+  "description": "Async MCP server for managing concurrent Claude Code workers with racing pattern. Fire up multiple Claude workers, wait for completion, and resume conversations seamlessly.",
+  "version": "0.1.0",
+  "author": {
+    "name": "nanco"
+  },
+  "mcpServers": "./mcp-config.json",
+  "skills": "./skills/"
+}
