@@ -8,11 +8,10 @@ import asyncio
 import contextlib
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import server
-from server import mcp, active_tasks, complete_tasks
-from server import ActiveTask, CompleteTask, ClaudeJobResult
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.server import mcp, active_tasks, complete_tasks, workers
+from src.server import ActiveTask, CompleteTask, ClaudeJobResult
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
@@ -20,9 +19,11 @@ from fastmcp.exceptions import ToolError
 @pytest.fixture(autouse=True)
 def reset_state():
     """Reset global state before/after each test."""
+    workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
     yield
+    workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
 
@@ -32,8 +33,8 @@ def reset_state():
 @pytest.mark.anyio
 async def test_create_async_worker_returns_worker_id():
     """Test that create_async_worker returns a string worker_id."""
-    with patch('server.shutil.which', return_value='/usr/bin/claude'):
-        with patch('server.asyncio.create_subprocess_exec') as mock_exec:
+    with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
+        with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
             # Create a mock process
             mock_proc = AsyncMock()
             mock_proc.communicate = AsyncMock(return_value=(
@@ -41,6 +42,9 @@ async def test_create_async_worker_returns_worker_id():
                 b""
             ))
             mock_proc.returncode = 0
+            # Mock stdin.close() as a regular method (not async)
+            mock_proc.stdin = Mock()
+            mock_proc.stdin.close = Mock()
             mock_exec.return_value = mock_proc
 
             async with Client(mcp) as client:
@@ -89,14 +93,17 @@ async def test_create_async_worker_complete_tasks_dont_count():
         )
 
     # Should still be able to create 10 active workers
-    with patch('server.shutil.which', return_value='/usr/bin/claude'):
-        with patch('server.asyncio.create_subprocess_exec') as mock_exec:
+    with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
+        with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
             mock_proc = AsyncMock()
             mock_proc.communicate = AsyncMock(return_value=(
                 json.dumps({"session_id": "test-123"}).encode(),
                 b""
             ))
             mock_proc.returncode = 0
+            # Mock stdin.close() as a regular method (not async)
+            mock_proc.stdin = Mock()
+            mock_proc.stdin.close = Mock()
             mock_exec.return_value = mock_proc
 
             async with Client(mcp) as client:
@@ -112,7 +119,7 @@ async def test_create_async_worker_complete_tasks_dont_count():
 @pytest.mark.anyio
 async def test_create_async_worker_claude_not_in_path():
     """Test error when claude command not found."""
-    with patch('server.shutil.which', return_value=None):
+    with patch('src.server.shutil.which', return_value=None):
         async with Client(mcp) as client:
             # create_async_worker will return worker_id, but the background task will fail
             result = await client.call_tool("create_async_worker", {"prompt": "test"})
@@ -178,13 +185,16 @@ async def test_write_to_worker_resumes_conversation():
         timeout=300.0
     )
 
-    with patch('server.asyncio.create_subprocess_exec') as mock_exec:
+    with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(
             json.dumps({"session_id": "session-123", "result": "Response"}).encode(),
             b""
         ))
         mock_proc.returncode = 0
+        # Mock stdin.close() as a regular method (not async)
+        mock_proc.stdin = Mock()
+        mock_proc.stdin.close = Mock()
         mock_exec.return_value = mock_proc
 
         async with Client(mcp) as client:
@@ -218,11 +228,11 @@ async def test_write_to_worker_nonexistent():
         assert "not found" in str(exc_info.value)
 
 
-# --- Test wait ---
+# --- Test race ---
 
 @pytest.mark.anyio
 async def test_wait_no_active_tasks():
-    """Test wait with no active tasks raises error."""
+    """Test waitwith no active tasks raises error."""
     async with Client(mcp) as client:
         with pytest.raises(Exception) as exc_info:
             await client.call_tool("wait", {"timeout": 1.0})
@@ -231,7 +241,7 @@ async def test_wait_no_active_tasks():
 
 @pytest.mark.anyio
 async def test_wait_returns_first_completion():
-    """Test wait returns first completed worker."""
+    """Test waitreturns first completed worker."""
     # Create a real completed task
     async def complete_immediately():
         return ClaudeJobResult(
@@ -249,12 +259,17 @@ async def test_wait_returns_first_completion():
     async with Client(mcp) as client:
         result = await client.call_tool("wait", {"timeout": 5.0})
 
-        # Should return list of CompleteTask objects (serialized as dicts)
-        assert isinstance(result.data, list)
-        assert len(result.data) == 1
+        # Should return WorkerState with completed tasks and permissions
+        assert isinstance(result.structured_content, dict)
+        assert "completed" in result.structured_content
+        assert "pending_permissions" in result.structured_content
+        assert isinstance(result.structured_content["completed"], list)
+        assert len(result.structured_content["completed"]) == 1
         # Access as dict since fastmcp serializes dataclasses
-        assert result.data[0]["worker_id"] == "task-1"
-        assert result.data[0]["claude_session_id"] == "session-1"
+        assert result.structured_content["completed"][0]["worker_id"] == "task-1"
+        assert result.structured_content["completed"][0]["claude_session_id"] == "session-1"
+        # Pending permissions should be empty (no permissions requested)
+        assert result.structured_content["pending_permissions"] == []
         # Task should be moved to complete
         assert len(active_tasks) == 0
         assert len(complete_tasks) == 1
@@ -264,7 +279,7 @@ async def test_wait_returns_first_completion():
 
 @pytest.mark.anyio
 async def test_wait_timeout():
-    """Test wait timeout raises error."""
+    """Test waittimeout raises error."""
     # Create a real task that never completes
     async def wait_forever():
         await asyncio.sleep(1000)
@@ -277,7 +292,8 @@ async def test_wait_timeout():
     try:
         async with Client(mcp) as client:
             res = await client.call_tool("wait", {"timeout": 0.1})
-            assert len(res.data) == 0
+            # WorkerState with no completed tasks
+            assert len(res.structured_content["completed"]) == 0
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -286,7 +302,7 @@ async def test_wait_timeout():
 
 @pytest.mark.anyio
 async def test_wait_bad_return_code():
-    """Test wait with bad return code raises error."""
+    """Test waitwith bad return code raises error."""
     # Create a real task that returns bad exit code
     async def bad_return_code():
         return ClaudeJobResult(worker_id="task-1", returncode=1, stdout="", stderr="error")
@@ -305,7 +321,7 @@ async def test_wait_bad_return_code():
 
 @pytest.mark.anyio
 async def test_wait_multiple_simultaneous_completions():
-    """Test wait returns all tasks that complete simultaneously."""
+    """Test waitreturns all tasks that complete simultaneously."""
     # Create multiple tasks that complete immediately
     async def complete_immediately(worker_id: str, session_id: str):
         return ClaudeJobResult(
@@ -328,12 +344,14 @@ async def test_wait_multiple_simultaneous_completions():
     async with Client(mcp) as client:
         result = await client.call_tool("wait", {"timeout": 5.0})
 
-        # Should return list with all 3 completed tasks
-        assert isinstance(result.data, list)
-        assert len(result.data) == 3
+        # Should return WorkerState with all 3 completed tasks
+        assert isinstance(result.structured_content, dict)
+        assert "completed" in result.structured_content
+        assert isinstance(result.structured_content["completed"], list)
+        assert len(result.structured_content["completed"]) == 3
 
         # Verify all tasks were processed (access as dicts)
-        worker_ids = {task["worker_id"] for task in result.data}
+        worker_ids = {task["worker_id"] for task in result.structured_content["completed"]}
         assert worker_ids == {"task-1", "task-2", "task-3"}
 
         # All tasks should be moved to complete
@@ -349,14 +367,17 @@ async def test_wait_multiple_simultaneous_completions():
 @pytest.mark.anyio
 async def test_multiple_workers_concurrent():
     """Test creating multiple workers concurrently."""
-    with patch('server.shutil.which', return_value='/usr/bin/claude'):
-        with patch('server.asyncio.create_subprocess_exec') as mock_exec:
+    with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
+        with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
             mock_proc = AsyncMock()
             mock_proc.communicate = AsyncMock(return_value=(
                 json.dumps({"session_id": "test-123"}).encode(),
                 b""
             ))
             mock_proc.returncode = 0
+            # Mock stdin.close() as a regular method (not async)
+            mock_proc.stdin = Mock()
+            mock_proc.stdin.close = Mock()
             mock_exec.return_value = mock_proc
 
             async with Client(mcp) as client:
@@ -373,11 +394,11 @@ async def test_multiple_workers_concurrent():
                 assert len(active_tasks) == 3
 
 
-# --- Test wait with worker_id ---
+# --- Test race with worker_id ---
 
 @pytest.mark.anyio
 async def test_wait_with_specific_worker_id():
-    """Test wait waits for a specific worker when worker_id is provided."""
+    """Test waitwaits for a specific worker when worker_id is provided."""
     # Create two tasks that complete at different times
     async def complete_after_delay(worker_id: str, delay: float):
         await asyncio.sleep(delay)
@@ -396,14 +417,15 @@ async def test_wait_with_specific_worker_id():
     active_tasks["task-2"] = ActiveTask(worker_id="task-2", task=task2, timeout=300.0)
 
     async with Client(mcp) as client:
-        # wait for task-2 specifically
+        # Race for task-2 specifically
         result = await client.call_tool("wait", {"timeout": 5.0, "worker_id": "task-2"})
 
-        # Should return only task-2
-        assert isinstance(result.data, list)
-        assert len(result.data) == 1
-        assert result.data[0]["worker_id"] == "task-2"
-        assert result.data[0]["claude_session_id"] == "session-task-2"
+        # Should return WorkerState with only task-2
+        assert isinstance(result.structured_content, dict)
+        assert "completed" in result.structured_content
+        assert len(result.structured_content["completed"]) == 1
+        assert result.structured_content["completed"][0]["worker_id"] == "task-2"
+        assert result.structured_content["completed"][0]["claude_session_id"] == "session-task-2"
 
         # Both tasks should be in complete_tasks (task-1 completed first)
         assert len(complete_tasks) >= 1
@@ -412,7 +434,7 @@ async def test_wait_with_specific_worker_id():
 
 @pytest.mark.anyio
 async def test_wait_with_worker_id_already_complete():
-    """Test wait returns immediately if worker_id is already complete."""
+    """Test waitreturns immediately if worker_id is already complete."""
     # Add a worker to complete_tasks
     complete_tasks["task-1"] = CompleteTask(
         worker_id="task-1",
@@ -425,16 +447,17 @@ async def test_wait_with_worker_id_already_complete():
     async with Client(mcp) as client:
         result = await client.call_tool("wait", {"timeout": 5.0, "worker_id": "task-1"})
 
-        # Should return task-1 immediately
-        assert isinstance(result.data, list)
-        assert len(result.data) == 1
-        assert result.data[0]["worker_id"] == "task-1"
-        assert result.data[0]["claude_session_id"] == "session-1"
+        # Should return WorkerState with task-1 immediately
+        assert isinstance(result.structured_content, dict)
+        assert "completed" in result.structured_content
+        assert len(result.structured_content["completed"]) == 1
+        assert result.structured_content["completed"][0]["worker_id"] == "task-1"
+        assert result.structured_content["completed"][0]["claude_session_id"] == "session-1"
 
 
 @pytest.mark.anyio
 async def test_wait_with_nonexistent_worker_id():
-    """Test wait raises error for nonexistent worker_id."""
+    """Test waitraises error for nonexistent worker_id."""
     # Create one active task
     async def complete_immediately():
         return ClaudeJobResult(
@@ -448,7 +471,7 @@ async def test_wait_with_nonexistent_worker_id():
     active_tasks["task-1"] = ActiveTask(worker_id="task-1", task=task, timeout=300.0)
 
     async with Client(mcp) as client:
-        # Try to wait for non-existent worker
+        # Try to race for non-existent worker
         with pytest.raises(Exception) as exc_info:
             await client.call_tool("wait", {"timeout": 5.0, "worker_id": "nonexistent"})
         assert "not found" in str(exc_info.value).lower()
@@ -456,7 +479,7 @@ async def test_wait_with_nonexistent_worker_id():
 
 @pytest.mark.anyio
 async def test_wait_with_worker_id_processes_other_workers():
-    """Test wait processes all completed workers while waiting for specific one."""
+    """Test waitprocesses all completed workers while waiting for specific one."""
     # Create three tasks: task-1 completes first, task-2 completes second, task-3 completes third
     async def complete_after_delay(worker_id: str, delay: float):
         await asyncio.sleep(delay)
@@ -476,13 +499,14 @@ async def test_wait_with_worker_id_processes_other_workers():
     active_tasks["task-3"] = ActiveTask(worker_id="task-3", task=task3, timeout=300.0)
 
     async with Client(mcp) as client:
-        # wait for task-3 specifically (the last to complete)
+        # Race for task-3 specifically (the last to complete)
         result = await client.call_tool("wait", {"timeout": 5.0, "worker_id": "task-3"})
 
-        # Should return only task-3
-        assert isinstance(result.data, list)
-        assert len(result.data) == 1
-        assert result.data[0]["worker_id"] == "task-3"
+        # Should return WorkerState with only task-3
+        assert isinstance(result.structured_content, dict)
+        assert "completed" in result.structured_content
+        assert len(result.structured_content["completed"]) == 1
+        assert result.structured_content["completed"][0]["worker_id"] == "task-3"
 
         # All three tasks should be in complete_tasks since they completed during the wait
         assert len(complete_tasks) == 3

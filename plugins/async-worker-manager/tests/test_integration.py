@@ -6,19 +6,20 @@ import asyncio
 from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import server
-from server import mcp, active_tasks, complete_tasks
+from src.server import mcp, active_tasks, complete_tasks, workers
 from fastmcp import Client
 
 
 @pytest.fixture(autouse=True)
 def reset_state():
     """Reset global state before/after each test."""
+    workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
     yield
+    workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
 
@@ -50,7 +51,10 @@ async def test_e2e_create_wait_peek_write():
         # 2. wait to get first completion
         print("\n[3/6] Racing workers (waiting for completion)...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        worker_state = result.structured_content
+        assert isinstance(worker_state, dict) or hasattr(worker_state, "completed")
+        assert "completed" in worker_state
+        complete_tasks = worker_state["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
         complete_task = complete_tasks[0]
@@ -77,7 +81,7 @@ async def test_e2e_create_wait_peek_write():
         # 5. wait again
         print("\n[6/6] Racing again for second completion...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
         assert complete_tasks[0]["worker_id"] == worker_id
@@ -118,7 +122,7 @@ async def test_multiple_workers_racing():
 
         print("\n[2/3] Racing to find first completion...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
         # All completed workers should be in our worker_ids
@@ -156,7 +160,7 @@ async def test_peek_during_execution():
 
         print("\n[2/3] Waiting for completion via wait...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
         assert complete_tasks[0]["worker_id"] == worker_id
@@ -196,7 +200,7 @@ async def test_session_resumption_maintains_context():
 
         print("\n[2/5] Racing to completion...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
         assert complete_tasks[0]["worker_id"] == worker_id
@@ -217,7 +221,7 @@ async def test_session_resumption_maintains_context():
 
         print("\n[5/5] Racing for second response...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
         assert complete_tasks[0]["worker_id"] == worker_id
@@ -257,14 +261,14 @@ async def test_concurrent_peek_and_check():
 
         print("\n[2/3] Racing first worker...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         first_winners = [task["worker_id"] for task in complete_tasks]
         print(f"✓ First winner(s): {first_winners}")
 
         print("\n[3/3] Racing second worker...")
         result = await client.call_tool("wait", {"timeout": 60.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         second_winners = [task["worker_id"] for task in complete_tasks]
         print(f"✓ Second winner(s): {second_winners}")
@@ -313,7 +317,7 @@ async def test_wait_detects_already_completed_tasks():
         # NOW call wait - should immediately detect the already-completed task
         print("\n[3/3] Calling wait() on already-completed task...")
         result = await client.call_tool("wait", {"timeout": 5.0})
-        complete_tasks = result.data
+        complete_tasks = result.structured_content["completed"]
 
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
