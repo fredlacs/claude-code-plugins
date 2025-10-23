@@ -133,7 +133,11 @@ async def wait(
         if completed or failed or pending_perms:
             return WorkerState(completed=completed, failed=failed, pending_permissions=pending_perms)
 
-        # Wait for events
+        # Hybrid event + periodic polling loop
+        # This combines instant event-driven response with periodic completion checks
+        # for long-running subprocesses that complete after wait() is called
+        POLL_INTERVAL = 5.0  # Check for completions every 5 seconds
+
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
             remaining = max(0, timeout - elapsed)
@@ -142,8 +146,11 @@ async def wait(
                 return WorkerState(completed=[], failed=[], pending_permissions=[])
 
             try:
-                # Wait for event with timeout
-                event = await asyncio.wait_for(get_event_queue().get(), timeout=remaining)
+                # Wait for event OR poll interval (whichever comes first)
+                # This ensures we get instant response for quick tasks,
+                # while still checking for slow subprocess completions
+                wait_time = min(remaining, POLL_INTERVAL)
+                event = await asyncio.wait_for(get_event_queue().get(), timeout=wait_time)
 
                 # Process event
                 if isinstance(event, CompletionEvent):
@@ -167,7 +174,18 @@ async def wait(
                         pending_permissions=[event.permission] + _get_pending_permissions()
                     )
             except asyncio.TimeoutError:
-                return WorkerState(completed=[], failed=[], pending_permissions=[])
+                # No event received in POLL_INTERVAL - check for completions manually
+                # This catches long-running subprocesses that complete between polls
+                completed, failed = await _flush_completed_tasks(timeout=0.0)
+                pending_perms = _get_pending_permissions()
+
+                if completed or failed or pending_perms:
+                    return WorkerState(
+                        completed=completed,
+                        failed=failed,
+                        pending_permissions=pending_perms
+                    )
+                # Nothing yet, loop continues to wait for more events
 
     else:
         # Wait for specific worker - keep polling approach for simplicity
