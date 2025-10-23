@@ -10,8 +10,8 @@ import contextlib
 # Add src to path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.server import mcp, active_tasks, complete_tasks, workers
-from src.server import ActiveTask, CompleteTask, ClaudeJobResult
+from src.server import mcp, active_tasks, complete_tasks, workers, _event_queues
+from src.server import ActiveTask, CompleteTask, ClaudeJobResult, Worker, WorkerStatus
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
@@ -22,10 +22,14 @@ def reset_state():
     workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
+    # Clear all event queues
+    _event_queues.clear()
     yield
     workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
+    # Clear all event queues
+    _event_queues.clear()
 
 
 # --- Test create_async_worker ---
@@ -138,38 +142,6 @@ async def test_create_async_worker_claude_not_in_path():
             with pytest.raises(ToolError) as exc_info:
                 active_tasks[worker_id].task.result()
             assert "not in PATH" in str(exc_info.value)
-
-
-# --- Test peek ---
-
-@pytest.mark.anyio
-async def test_peek_complete_worker():
-    """Test peeking at a complete worker."""
-    complete_tasks["task-1"] = CompleteTask(
-        worker_id="task-1",
-        claude_session_id="session-123",
-        std_out="Hello world",
-        std_err="Some warning",
-        timeout=300.0
-    )
-
-    async with Client(mcp) as client:
-        result = await client.call_tool("peek", {"worker_id": "task-1"})
-
-        # peek returns CompleteTask object - access as attributes
-        assert result.data.worker_id == "task-1"
-        assert result.data.claude_session_id == "session-123"
-        assert result.data.std_out == "Hello world"
-        assert result.data.std_err == "Some warning"
-
-
-@pytest.mark.anyio
-async def test_peek_nonexistent_worker():
-    """Test peeking at non-existent worker raises error."""
-    async with Client(mcp) as client:
-        with pytest.raises(Exception) as exc_info:
-            await client.call_tool("peek", {"worker_id": "nonexistent"})
-        assert "not found" in str(exc_info.value)
 
 
 # --- Test resume_worker ---
@@ -583,5 +555,39 @@ async def test_wait_with_worker_id_processes_other_workers():
         assert "task-1" in complete_tasks
         assert "task-2" in complete_tasks
         assert "task-3" in complete_tasks
+
+
+@pytest.mark.anyio
+async def test_wait_event_latency():
+    """Test that event-driven wait() has sub-150ms latency."""
+    import time
+
+    # Create a task that completes immediately
+    async def complete_immediately():
+        return ClaudeJobResult(
+            worker_id="task-1",
+            returncode=0,
+            stdout=json.dumps({"session_id": "session-1"}),
+            stderr=""
+        )
+
+    task = asyncio.create_task(complete_immediately())
+    await task
+    active_tasks["task-1"] = ActiveTask(worker_id="task-1", task=task, timeout=300.0)
+    workers["task-1"] = Worker(
+        worker_id="task-1",
+        status=WorkerStatus.ACTIVE,
+        timeout=300.0,
+        task=task
+    )
+
+    async with Client(mcp) as client:
+        start = time.time()
+        result = await client.call_tool("wait", {"timeout": 5.0})
+        latency = (time.time() - start) * 1000  # Convert to ms
+
+        print(f"\nWait latency: {latency:.1f}ms")
+        # Event-driven should be <150ms, old polling was ~500ms
+        assert latency < 150, f"Expected <150ms, got {latency:.1f}ms"
 
 

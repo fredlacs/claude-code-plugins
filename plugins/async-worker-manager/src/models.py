@@ -4,7 +4,7 @@ from asyncio import Event, Task
 import socket
 from enum import Enum
 from pydantic import BaseModel
-from typing import Optional, Literal, List, TYPE_CHECKING
+from typing import Optional, Literal, List, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .unix_socket_manager import UnixSocketManager
@@ -25,8 +25,8 @@ class ActiveTask:
     permission_socket: Optional[socket.socket] = None
 
 
-@dataclass
-class CompleteTask:
+class CompleteTask(BaseModel):
+    """Completed worker task with output."""
     worker_id: str
     claude_session_id: str
     std_out: str
@@ -61,17 +61,35 @@ class Worker:
     socket_mgr: Optional['UnixSocketManager'] = None  # Forward reference
 
 
-@dataclass
-class WorkerState:
-    """
-    Unified worker state snapshot.
+class PermissionRequest(BaseModel):
+    """Permission request data returned to client and used for wire format."""
+    request_id: str
+    worker_id: str
+    tool: str
+    input: dict
 
-    Combines completed task results with live permission request state.
-    Returned by wait() to provide complete visibility into worker status.
-    """
-    completed: List['CompleteTask']
-    failed: List['FailedTask']
-    pending_permissions: List['PermissionRequest']
+
+# Event models for event-driven polling
+class CompletionEvent(BaseModel):
+    """Event: worker completed successfully."""
+    worker_id: str
+    task: 'CompleteTask'
+
+
+class FailureEvent(BaseModel):
+    """Event: worker failed."""
+    worker_id: str
+    task: 'FailedTask'
+
+
+class PermissionEvent(BaseModel):
+    """Event: worker requesting permission."""
+    worker_id: str
+    permission: PermissionRequest
+
+
+# Union type for queue
+WorkerEvent = Union[CompletionEvent, FailureEvent, PermissionEvent]
 
 
 @dataclass
@@ -85,12 +103,16 @@ class PendingPermission:
     response: Optional['PermissionResponseMessage'] = None  # Type-safe response
 
 
-class PermissionRequest(BaseModel):
-    """Permission request data returned to client and used for wire format."""
-    request_id: str
-    worker_id: str
-    tool: str
-    input: dict
+class WorkerState(BaseModel):
+    """
+    Unified worker state snapshot.
+
+    Combines completed task results with live permission request state.
+    Returned by wait() to provide complete visibility into worker status.
+    """
+    completed: List[CompleteTask]
+    failed: List[FailedTask]
+    pending_permissions: List[PermissionRequest]
 
 
 class PermissionResponse(BaseModel):

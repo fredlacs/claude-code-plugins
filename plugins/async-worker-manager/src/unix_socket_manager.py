@@ -10,7 +10,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from fastmcp.exceptions import ToolError
 
@@ -19,6 +19,9 @@ from .models import (
     PermissionRequest,
     PermissionResponseMessage,
 )
+
+if TYPE_CHECKING:
+    from asyncio import Queue
 
 
 class UnixSocketManager:
@@ -38,9 +41,10 @@ class UnixSocketManager:
             # manager handles permission requests automatically
     """
 
-    def __init__(self, worker_id: str, timeout: float):
+    def __init__(self, worker_id: str, timeout: float, event_queue: Optional['Queue'] = None):
         self.worker_id = worker_id
         self.timeout = timeout
+        self.event_queue = event_queue
         self.socket_path = Path(f"/tmp/claude_worker_{worker_id}.sock")
         self.io_timeout = 30.0
 
@@ -310,6 +314,17 @@ class UnixSocketManager:
                     response=None
                 )
                 self._pending[request_id] = pending_perm
+
+                # Push permission event to queue
+                if self.event_queue:
+                    from .models import PermissionEvent
+                    perm_req = PermissionRequest(
+                        request_id=request_id,
+                        worker_id=self.worker_id,
+                        tool=request.tool,
+                        input=request.input
+                    )
+                    self.event_queue.put_nowait(PermissionEvent(worker_id=self.worker_id, permission=perm_req))
 
                 # Block until approval (via approve_request method)
                 try:

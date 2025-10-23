@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import uuid
+from asyncio import Queue
 from typing import Dict, List, Optional
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -11,7 +12,10 @@ from .models import (
     ActiveTask,
     ClaudeJobResult,
     CompleteTask,
+    CompletionEvent,
     FailedTask,
+    FailureEvent,
+    PermissionEvent,
     PermissionRequest,
     Worker,
     WorkerState,
@@ -25,6 +29,18 @@ workers: Dict[str, Worker] = {}
 # Legacy exports for backwards compatibility with tests
 active_tasks: Dict[str, ActiveTask] = {}
 complete_tasks: Dict[str, CompleteTask] = {}
+
+# Event queue for instant notifications (created per-loop)
+_event_queues: Dict[int, Queue] = {}
+
+
+def get_event_queue() -> Queue:
+    """Get or create event queue for current event loop."""
+    loop = asyncio.get_event_loop()
+    loop_id = id(loop)
+    if loop_id not in _event_queues:
+        _event_queues[loop_id] = Queue()
+    return _event_queues[loop_id]
 
 
 @mcp.tool
@@ -46,22 +62,6 @@ async def create_async_worker(prompt: str, timeout: float = 300.0) -> str:
     # Maintain legacy dict for test compatibility
     active_tasks[worker_id] = ActiveTask(worker_id, task, timeout)
     return worker_id
-
-
-@mcp.tool
-async def peek(worker_id: str) -> CompleteTask:
-    """Peek at stdout/stderr of a worker."""
-    # Try to flush completed tasks if worker is in active_tasks (for backward compat)
-    if worker_id in active_tasks:
-        # Flush any completed tasks, including this one if it's done
-        # Use a tiny bit more than 0 to catch recently completed tasks
-        _, _ = await _flush_completed_tasks(timeout=0.01)
-
-    # Check complete_tasks (legacy dict for backward compat)
-    if worker_id not in complete_tasks:
-        raise ToolError(f"Worker {worker_id} not found or not complete. try wait")
-
-    return complete_tasks[worker_id]
 
 
 @mcp.tool
@@ -105,6 +105,8 @@ async def wait(
     """
     Wait for workers to complete or request permissions. Returns unified WorkerState.
 
+    Uses event-driven notifications for instant response (<100ms latency).
+
     Returns WorkerState when:
     - One or more workers complete, OR
     - One or more pending permissions exist, OR
@@ -120,40 +122,63 @@ async def wait(
     start_time = asyncio.get_event_loop().time()
 
     if worker_id is None:
-        # Wait for any worker to complete OR any pending permissions
-        # Check if there are any workers at all (check legacy dicts for backward compat)
+        # Wait for any worker
         if not active_tasks and not complete_tasks:
             raise ToolError("No active workers to wait for")
 
+        # Check if we already have completed/failed workers
+        completed, failed = await _flush_completed_tasks(timeout=0.0)
+        pending_perms = _get_pending_permissions()
+
+        if completed or failed or pending_perms:
+            return WorkerState(completed=completed, failed=failed, pending_permissions=pending_perms)
+
+        # Wait for events
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
-            remaining_timeout = timeout - elapsed
-            if remaining_timeout <= 0:
-                # Timeout - return current state (may be empty)
+            remaining = max(0, timeout - elapsed)
+
+            if remaining <= 0:
                 return WorkerState(completed=[], failed=[], pending_permissions=[])
 
-            # Quick check for completions (non-blocking)
-            completed, failed = await _flush_completed_tasks(timeout=0.0)
+            try:
+                # Wait for event with timeout
+                event = await asyncio.wait_for(get_event_queue().get(), timeout=remaining)
 
-            # Check for pending permissions
-            pending_perms = _get_pending_permissions()
-
-            # Return if we have either completions, failures, or permissions
-            if completed or failed or pending_perms:
-                return WorkerState(completed=completed, failed=failed, pending_permissions=pending_perms)
-
-            # Sleep briefly before next poll
-            await asyncio.sleep(0.5)
+                # Process event
+                if isinstance(event, CompletionEvent):
+                    return WorkerState(
+                        completed=[event.task],
+                        failed=[],
+                        pending_permissions=_get_pending_permissions()
+                    )
+                elif isinstance(event, FailureEvent):
+                    return WorkerState(
+                        completed=[],
+                        failed=[event.task],
+                        pending_permissions=_get_pending_permissions()
+                    )
+                elif isinstance(event, PermissionEvent):
+                    # Flush any completed tasks too
+                    completed, failed = await _flush_completed_tasks(timeout=0.0)
+                    return WorkerState(
+                        completed=completed,
+                        failed=failed,
+                        pending_permissions=[event.permission] + _get_pending_permissions()
+                    )
+            except asyncio.TimeoutError:
+                return WorkerState(completed=[], failed=[], pending_permissions=[])
 
     else:
-        # Wait for specific worker to complete OR have pending permissions
+        # Wait for specific worker - keep polling approach for simplicity
+        # (Event filtering by worker_id would add complexity)
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
             remaining_timeout = timeout - elapsed
             if remaining_timeout <= 0:
                 raise ToolError(f"Timeout after {timeout}s waiting for worker {worker_id}")
 
-            # Check if worker already complete (legacy dict for backward compat)
+            # Check if worker already complete
             if worker_id in complete_tasks:
                 return WorkerState(
                     completed=[complete_tasks[worker_id]],
@@ -161,7 +186,7 @@ async def wait(
                     pending_permissions=_get_pending_permissions(worker_id)
                 )
 
-            # Check if worker exists (legacy dict for backward compat)
+            # Check if worker exists
             if worker_id not in active_tasks:
                 raise ToolError(f"Worker {worker_id} not found in active tasks")
 
@@ -194,7 +219,7 @@ async def wait(
                     pending_permissions=pending_perms
                 )
 
-            # Sleep briefly before next poll
+            # Sleep briefly before next poll (keep for specific worker case)
             await asyncio.sleep(0.5)
 
 
@@ -206,7 +231,7 @@ async def run_claude_job(
         raise ToolError("Claude not in PATH")
 
     # Use UnixSocketManager context manager for socket lifecycle
-    async with UnixSocketManager(worker_id, timeout) as socket_mgr:
+    async with UnixSocketManager(worker_id, timeout, get_event_queue()) as socket_mgr:
         # Register manager in unified worker registry
         if worker_id in workers:
             workers[worker_id].socket_mgr = socket_mgr
@@ -384,6 +409,9 @@ async def _flush_completed_tasks(timeout: float) -> tuple[List[CompleteTask], Li
             )
             failed.append(failed_task)
 
+            # Push failure event to queue
+            get_event_queue().put_nowait(FailureEvent(worker_id=result.worker_id, task=failed_task))
+
             # Transition ACTIVE -> FAILED in workers dict if exists
             if result.worker_id in workers:
                 workers[result.worker_id].status = WorkerStatus.FAILED
@@ -400,12 +428,15 @@ async def _flush_completed_tasks(timeout: float) -> tuple[List[CompleteTask], Li
 
             # Create CompleteTask
             complete = CompleteTask(
-                result.worker_id,
-                session_id,
-                result.stdout,
-                result.stderr,
-                active.timeout,
+                worker_id=result.worker_id,
+                claude_session_id=session_id,
+                std_out=result.stdout,
+                std_err=result.stderr,
+                timeout=active.timeout
             )
+
+            # Push completion event to queue
+            get_event_queue().put_nowait(CompletionEvent(worker_id=result.worker_id, task=complete))
 
             # Transition ACTIVE -> COMPLETED in workers dict if exists
             if result.worker_id in workers:

@@ -8,7 +8,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.server import mcp, active_tasks, complete_tasks, workers
+from src.server import mcp, active_tasks, complete_tasks, workers, _event_queues
 from fastmcp import Client
 
 
@@ -18,18 +18,22 @@ def reset_state():
     workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
+    # Clear all event queues
+    _event_queues.clear()
     yield
     workers.clear()
     active_tasks.clear()
     complete_tasks.clear()
+    # Clear all event queues
+    _event_queues.clear()
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not shutil.which("claude"), reason="Requires claude in PATH")
 @pytest.mark.anyio
-async def test_e2e_create_wait_peek_write():
+async def test_e2e_create_wait_resume():
     """
-    E2E integration test: Create → wait → Peek → Write → wait
+    E2E integration test: Create → wait → Resume → wait
 
     Verifies the complete lifecycle of the new racing pattern.
     """
@@ -39,7 +43,7 @@ async def test_e2e_create_wait_peek_write():
 
     async with Client(mcp) as client:
         # 1. Create a worker
-        print("\n[1/6] Creating worker...")
+        print("\n[1/5] Creating worker...")
         result = await client.call_tool("create_async_worker", {
             "prompt": "Say 'Hello!' and nothing else"
         })
@@ -49,7 +53,7 @@ async def test_e2e_create_wait_peek_write():
         assert len(worker_id) == 36  # UUID format
 
         # 2. wait to get first completion
-        print("\n[3/6] Racing workers (waiting for completion)...")
+        print("\n[2/5] Racing workers (waiting for completion)...")
         result = await client.call_tool("wait", {"timeout": 60.0})
         worker_state = result.structured_content
         assert isinstance(worker_state, dict) or hasattr(worker_state, "completed")
@@ -62,16 +66,15 @@ async def test_e2e_create_wait_peek_write():
         assert complete_task["worker_id"] == worker_id
         print(f"✓ Worker moved to complete state")
 
-        # 3. Peek at output
-        print("\n[4/6] Peeking at worker output...")
-        result = await client.call_tool("peek", {"worker_id": worker_id})
-        print(f"✓ Session ID: {result.data.claude_session_id}")
-        print(f"✓ Stdout length: {len(result.data.std_out)}")
-        assert result.data.worker_id == worker_id
-        assert result.data.claude_session_id is not None
+        # 3. Access data from wait() response (no need for peek)
+        print("\n[3/5] Accessing worker data from wait() response...")
+        session_id = complete_task["claude_session_id"]
+        print(f"✓ Session ID: {session_id}")
+        print(f"✓ Stdout length: {len(complete_task['std_out'])}")
+        assert session_id is not None
 
         # 4. Resume with new input
-        print("\n[5/6] Resuming worker with new input...")
+        print("\n[4/5] Resuming worker with new input...")
         await client.call_tool("resume_worker", {
             "worker_id": worker_id,
             "message": "Now say 'Goodbye!' and nothing else"
@@ -79,17 +82,15 @@ async def test_e2e_create_wait_peek_write():
         print("✓ Worker resumed and back in active state")
 
         # 5. wait again
-        print("\n[6/6] Racing again for second completion...")
+        print("\n[5/5] Racing again for second completion...")
         result = await client.call_tool("wait", {"timeout": 60.0})
         complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
-        assert complete_tasks[0]["worker_id"] == worker_id
+        second_task = complete_tasks[0]
+        assert second_task["worker_id"] == worker_id
         print("✓ Second completion received")
-
-        # Final peek
-        result = await client.call_tool("peek", {"worker_id": worker_id})
-        print(f"✓ Final stdout length: {len(result.data.std_out)}")
+        print(f"✓ Final stdout length: {len(second_task['std_out'])}")
 
         print("\n" + "=" * 70)
         print("E2E TEST COMPLETE ✅")
@@ -140,37 +141,38 @@ async def test_multiple_workers_racing():
 @pytest.mark.integration
 @pytest.mark.skipif(not shutil.which("claude"), reason="Requires claude in PATH")
 @pytest.mark.anyio
-async def test_peek_during_execution():
+async def test_access_completed_task_data():
     """
-    Test peeking at a worker - can only peek complete workers.
+    Test accessing completed task data from wait() response.
 
-    This tests that peek works after wait completes a worker.
+    This tests that wait() provides all necessary task data without needing a separate peek.
     """
     print("\n" + "=" * 70)
-    print("INTEGRATION TEST: Peek After Completion")
+    print("INTEGRATION TEST: Access Completed Task Data")
     print("=" * 70)
 
     async with Client(mcp) as client:
-        print("\n[1/3] Creating worker...")
+        print("\n[1/2] Creating worker...")
         result = await client.call_tool("create_async_worker", {
             "prompt": "Say 'Processing...' and nothing else"
         })
         worker_id = result.data
         print(f"✓ Worker created: {worker_id}")
 
-        print("\n[2/3] Waiting for completion via wait...")
+        print("\n[2/2] Waiting for completion via wait...")
         result = await client.call_tool("wait", {"timeout": 60.0})
         complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
-        assert complete_tasks[0]["worker_id"] == worker_id
+        task = complete_tasks[0]
+        assert task["worker_id"] == worker_id
         print("✓ Worker completed")
 
-        # Now peek should show complete
-        print("\n[3/3] Peeking at completed worker...")
-        result = await client.call_tool("peek", {"worker_id": worker_id})
-        assert result.data.worker_id == worker_id
-        print(f"✓ Worker ID: {result.data.worker_id}")
+        # Access data directly from wait() response
+        print(f"✓ Worker ID from wait(): {task['worker_id']}")
+        print(f"✓ Session ID from wait(): {task['claude_session_id']}")
+        print(f"✓ Stdout length: {len(task['std_out'])}")
+        assert task["claude_session_id"] is not None
 
         print("\n" + "=" * 70)
         print("INTEGRATION TEST COMPLETE ✅")
@@ -191,45 +193,45 @@ async def test_session_resumption_maintains_context():
     print("=" * 70)
 
     async with Client(mcp) as client:
-        print("\n[1/5] Creating worker with context...")
+        print("\n[1/4] Creating worker with context...")
         result = await client.call_tool("create_async_worker", {
             "prompt": "Remember this number: 42. Say 'Stored!' and nothing else"
         })
         worker_id = result.data
         print(f"✓ Worker created: {worker_id}")
 
-        print("\n[2/5] Racing to completion...")
+        print("\n[2/4] Racing to completion...")
         result = await client.call_tool("wait", {"timeout": 60.0})
         complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
-        assert complete_tasks[0]["worker_id"] == worker_id
+        first_task = complete_tasks[0]
+        assert first_task["worker_id"] == worker_id
         print("✓ First turn complete")
 
-        print("\n[3/5] Peeking at session_id...")
-        result = await client.call_tool("peek", {"worker_id": worker_id})
-        session_id = result.data.claude_session_id
-        print(f"✓ Session ID: {session_id}")
+        # Access session_id from wait() response
+        session_id = first_task["claude_session_id"]
+        print(f"✓ Session ID from wait(): {session_id}")
         assert session_id is not None
 
-        print("\n[4/5] Resuming with follow-up...")
+        print("\n[3/4] Resuming with follow-up...")
         await client.call_tool("resume_worker", {
             "worker_id": worker_id,
             "message": "Say 'Done!' and nothing else"
         })
         print("✓ Resumed with same session_id")
 
-        print("\n[5/5] Racing for second response...")
+        print("\n[4/4] Racing for second response...")
         result = await client.call_tool("wait", {"timeout": 60.0})
         complete_tasks = result.structured_content["completed"]
         assert isinstance(complete_tasks, list)
         assert len(complete_tasks) >= 1
-        assert complete_tasks[0]["worker_id"] == worker_id
+        second_task = complete_tasks[0]
+        assert second_task["worker_id"] == worker_id
         print("✓ Second turn complete")
 
-        # Peek at final output
-        result = await client.call_tool("peek", {"worker_id": worker_id})
-        print(f"✓ Total conversation length: {len(result.data.std_out)}")
+        # Access final output from wait() response
+        print(f"✓ Total conversation length: {len(second_task['std_out'])}")
 
         print("\n" + "=" * 70)
         print("INTEGRATION TEST COMPLETE ✅")
@@ -239,14 +241,14 @@ async def test_session_resumption_maintains_context():
 @pytest.mark.integration
 @pytest.mark.skipif(not shutil.which("claude"), reason="Requires claude in PATH")
 @pytest.mark.anyio
-async def test_concurrent_peek_and_check():
+async def test_concurrent_workers():
     """
-    Test that concurrent peek operations work after completion.
+    Test that multiple workers can complete and their data accessed via wait().
 
-    Verifies peek works on multiple completed workers.
+    Verifies wait() returns all completed worker data.
     """
     print("\n" + "=" * 70)
-    print("INTEGRATION TEST: Concurrent Peek Operations")
+    print("INTEGRATION TEST: Concurrent Workers")
     print("=" * 70)
 
     async with Client(mcp) as client:
@@ -273,13 +275,10 @@ async def test_concurrent_peek_and_check():
         second_winners = [task["worker_id"] for task in complete_tasks]
         print(f"✓ Second winner(s): {second_winners}")
 
-        # Both workers complete, peek both
-        print("\n[4/3] Peeking both workers concurrently...")
-        results = await asyncio.gather(
-            client.call_tool("peek", {"worker_id": worker_ids[0]}),
-            client.call_tool("peek", {"worker_id": worker_ids[1]}),
-        )
-        print("✓ Both peeks completed")
+        # Verify both workers have data accessible
+        all_winners = first_winners + second_winners
+        print(f"\n✓ All workers completed: {all_winners}")
+        assert len(set(all_winners)) == 2, "Both workers should complete"
 
         print("\n" + "=" * 70)
         print("INTEGRATION TEST COMPLETE ✅")
@@ -330,46 +329,3 @@ async def test_wait_detects_already_completed_tasks():
         print("=" * 70)
 
 
-@pytest.mark.integration
-@pytest.mark.skipif(not shutil.which("claude"), reason="Requires claude in PATH")
-@pytest.mark.anyio
-async def test_peek_auto_flushes_completed_tasks():
-    """
-    Test that peek() automatically flushes already-completed tasks.
-
-    When peek() is called on a worker that's in active_tasks but has already
-    completed, peek() internally calls wait(timeout=0) to flush the task
-    from active_tasks to complete_tasks, then returns it.
-
-    This means users can just call peek() without worrying about calling
-    wait() first - peek() handles it automatically.
-    """
-    print("\n" + "=" * 70)
-    print("INTEGRATION TEST: peek() Auto-Flushes Completed Tasks")
-    print("=" * 70)
-
-    async with Client(mcp) as client:
-        print("\n[1/3] Creating a fast worker...")
-        result = await client.call_tool("create_async_worker", {
-            "prompt": "Say 'Done!' and nothing else",
-            "timeout": 30.0
-        })
-        worker_id = result.data
-        print(f"✓ Worker created: {worker_id}")
-
-        # Wait for task to complete naturally (without racing)
-        print("\n[2/3] Waiting for task to complete (without racing)...")
-        await asyncio.sleep(5)
-        print("✓ Task should be completed but still in active_tasks")
-
-        # Call peek() directly - it should auto-flush and succeed!
-        print("\n[3/3] Calling peek() (should auto-flush and succeed)...")
-        result = await client.call_tool("peek", {"worker_id": worker_id})
-        assert result.data.worker_id == worker_id
-        print(f"✓ peek succeeded: {worker_id}")
-        print("✓ peek() automatically flushed the completed task from active to complete")
-        print("✓ No need to manually call wait() first!")
-
-        print("\n" + "=" * 70)
-        print("INTEGRATION TEST COMPLETE ✅")
-        print("=" * 70)
