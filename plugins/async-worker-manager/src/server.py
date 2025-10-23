@@ -4,6 +4,7 @@ import os
 import shutil
 import uuid
 from asyncio import Queue
+from pathlib import Path
 from typing import Dict, List, Optional
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -241,12 +242,36 @@ async def wait(
             await asyncio.sleep(0.5)
 
 
+def _generate_error_hint(stderr: str, returncode: int) -> str:
+    """Generate brief actionable hint from stderr."""
+    stderr_lower = stderr.lower()
+
+    if "timeout" in stderr_lower:
+        return "Timed out. Increase timeout parameter."
+    elif "permission" in stderr_lower:
+        return "Permission denied. Check pending_permissions and approve."
+    elif "command not found" in stderr_lower:
+        return "Tool not found. Check MCP server config."
+    elif "connection" in stderr_lower or "failed to connect" in stderr_lower:
+        return "Connection failed. Check MCP server is running."
+    elif stderr:
+        # Return first 150 chars of stderr
+        return stderr[:150].replace('\n', ' ')
+    else:
+        return f"Exit code {returncode}"
+
+
 async def run_claude_job(
     prompt: str, timeout: float, worker_id: str, session_id: Optional[str] = None
 ) -> ClaudeJobResult:
     """Spawn Claude subprocess with Unix domain socket for permission requests."""
     if not shutil.which("claude"):
         raise ToolError("Claude not in PATH")
+
+    # Create logs directory
+    logs_dir = Path(__file__).parent.parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    output_file = logs_dir / f"worker-{worker_id}.json"
 
     # Use UnixSocketManager context manager for socket lifecycle
     async with UnixSocketManager(worker_id, timeout, get_event_queue()) as socket_mgr:
@@ -283,7 +308,6 @@ async def run_claude_job(
                 "--output-format", "json",
                 "--mcp-config", mcp_config_json,
                 "--permission-prompt-tool", "mcp__permission_proxy__request_permission",
-                "--debug"  # Enable debug logging
             ]
 
             # Debug logging
@@ -318,11 +342,15 @@ async def run_claude_job(
                     proc.communicate(), timeout=timeout
                 )
 
+                # Write stdout to file
+                output_file.write_text(out_bytes.decode("utf-8"))
+
                 return ClaudeJobResult(
                     worker_id=worker_id,
                     returncode=proc.returncode,
                     stdout=out_bytes.decode("utf-8"),
                     stderr=err_bytes.decode("utf-8"),
+                    output_file=str(output_file.absolute()),
                 )
             except (asyncio.TimeoutError, asyncio.CancelledError) as e:
                 proc.kill()
@@ -417,12 +445,16 @@ async def _flush_completed_tasks(timeout: float) -> tuple[List[CompleteTask], Li
             # Get the active task
             active = active_tasks.pop(result.worker_id)
 
-            # Create FailedTask
+            # Check if output file exists (partial output)
+            output_file_path = Path(result.output_file)
+            output_file_str = str(output_file_path.absolute()) if output_file_path.exists() else None
+
+            # Create FailedTask with error hint
             failed_task = FailedTask(
                 worker_id=result.worker_id,
                 returncode=result.returncode,
-                stderr=result.stderr[:500],  # Truncate stderr
-                error=f"Worker exited with code {result.returncode}",
+                output_file=output_file_str,
+                error_hint=_generate_error_hint(result.stderr, result.returncode),
                 timeout=active.timeout
             )
             failed.append(failed_task)
@@ -444,12 +476,11 @@ async def _flush_completed_tasks(timeout: float) -> tuple[List[CompleteTask], Li
             # Get the active task
             active = active_tasks.pop(result.worker_id)
 
-            # Create CompleteTask
+            # Create CompleteTask with output file path
             complete = CompleteTask(
                 worker_id=result.worker_id,
                 claude_session_id=session_id,
-                std_out=result.stdout,
-                std_err=result.stderr,
+                output_file=result.output_file,
                 timeout=active.timeout
             )
 

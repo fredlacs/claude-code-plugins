@@ -162,7 +162,10 @@ async def test_worker_needs_bash_permission():
         print(f"\n✓ Worker ID: {worker_result['worker_id']}")
 
         try:
-            stdout_data = json.loads(worker_result['std_out'])
+            # Read output from file
+            output_file = worker_result['output_file']
+            with open(output_file, 'r') as f:
+                stdout_data = json.load(f)
 
             # Check for permission denials
             permission_denials = stdout_data.get('permission_denials', [])

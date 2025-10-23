@@ -91,8 +91,7 @@ async def test_create_async_worker_complete_tasks_dont_count():
         complete_tasks[worker_id] = CompleteTask(
             worker_id=worker_id,
             claude_session_id=f"session-{i}",
-            std_out="output",
-            std_err="",
+            output_file=f"/tmp/worker-{worker_id}.json",
             timeout=300.0
         )
 
@@ -152,8 +151,7 @@ async def test_resume_worker_resumes_conversation():
     complete_tasks["task-1"] = CompleteTask(
         worker_id="task-1",
         claude_session_id="session-123",
-        std_out="Previous output",
-        std_err="",
+        output_file="/tmp/worker-task-1.json",
         timeout=300.0
     )
 
@@ -220,7 +218,8 @@ async def test_wait_returns_first_completion():
             worker_id="task-1",
             returncode=0,
             stdout=json.dumps({"session_id": "session-1"}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     task = asyncio.create_task(complete_immediately())
@@ -255,7 +254,7 @@ async def test_wait_timeout():
     # Create a real task that never completes
     async def wait_forever():
         await asyncio.sleep(1000)
-        return ClaudeJobResult(worker_id="task-1", returncode=0, stdout="", stderr="")
+        return ClaudeJobResult(worker_id="task-1", returncode=0, stdout="", stderr="", output_file="/tmp/worker-task-1.json")
 
     task = asyncio.create_task(wait_forever())
 
@@ -281,7 +280,8 @@ async def test_wait_returns_failed_workers():
             worker_id="task-1",
             returncode=1,
             stdout="",
-            stderr="Error: something went wrong"
+            stderr="Error: something went wrong",
+            output_file="/tmp/worker-task-1.json"
         )
 
     task = asyncio.create_task(failing_worker())
@@ -297,7 +297,7 @@ async def test_wait_returns_failed_workers():
         assert len(result.structured_content["failed"]) == 1
         assert result.structured_content["failed"][0]["worker_id"] == "task-1"
         assert result.structured_content["failed"][0]["returncode"] == 1
-        assert "Error: something went wrong" in result.structured_content["failed"][0]["stderr"]
+        assert "Error: something went wrong" in result.structured_content["failed"][0]["error_hint"]
 
 
 @pytest.mark.anyio
@@ -305,7 +305,7 @@ async def test_wait_bad_return_code():
     """Test that wait() returns failed workers (not exceptions) for bad return codes."""
     # Create a real task that returns bad exit code
     async def bad_return_code():
-        return ClaudeJobResult(worker_id="task-1", returncode=1, stdout="", stderr="error")
+        return ClaudeJobResult(worker_id="task-1", returncode=1, stdout="", stderr="error", output_file="/tmp/worker-task-1.json")
 
     task = asyncio.create_task(bad_return_code())
     await task  # Let it complete
@@ -331,7 +331,8 @@ async def test_wait_mixed_success_and_failure():
             worker_id="task-success",
             returncode=0,
             stdout=json.dumps({"session_id": "session-1"}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     async def failing_worker():
@@ -339,7 +340,8 @@ async def test_wait_mixed_success_and_failure():
             worker_id="task-fail",
             returncode=1,
             stdout="",
-            stderr="Error occurred"
+            stderr="Error occurred",
+            output_file="/tmp/worker-task-fail.json"
         )
 
     task_success = asyncio.create_task(successful_worker())
@@ -370,7 +372,8 @@ async def test_wait_multiple_simultaneous_completions():
             worker_id=worker_id,
             returncode=0,
             stdout=json.dumps({"session_id": session_id}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     # Create and complete 3 tasks
@@ -448,7 +451,8 @@ async def test_wait_with_specific_worker_id():
             worker_id=worker_id,
             returncode=0,
             stdout=json.dumps({"session_id": f"session-{worker_id}"}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     # Task 1 completes immediately, Task 2 completes after 0.1s
@@ -481,8 +485,7 @@ async def test_wait_with_worker_id_already_complete():
     complete_tasks["task-1"] = CompleteTask(
         worker_id="task-1",
         claude_session_id="session-1",
-        std_out=json.dumps({"session_id": "session-1"}),
-        std_err="",
+        output_file="/tmp/worker-task-1.json",
         timeout=300.0
     )
 
@@ -506,7 +509,8 @@ async def test_wait_with_nonexistent_worker_id():
             worker_id="task-1",
             returncode=0,
             stdout=json.dumps({"session_id": "session-1"}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     task = asyncio.create_task(complete_immediately())
@@ -529,7 +533,8 @@ async def test_wait_with_worker_id_processes_other_workers():
             worker_id=worker_id,
             returncode=0,
             stdout=json.dumps({"session_id": f"session-{worker_id}"}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     task1 = asyncio.create_task(complete_after_delay("task-1", 0))
@@ -568,7 +573,8 @@ async def test_wait_event_latency():
             worker_id="task-1",
             returncode=0,
             stdout=json.dumps({"session_id": "session-1"}),
-            stderr=""
+            stderr="",
+            output_file="/tmp/worker-task-1.json"
         )
 
     task = asyncio.create_task(complete_immediately())

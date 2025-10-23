@@ -15,6 +15,7 @@ class ClaudeJobResult:
     returncode: int
     stdout: str
     stderr: str
+    output_file: str  # Absolute path to logs/worker-{id}.json
 
 
 @dataclass
@@ -29,8 +30,7 @@ class CompleteTask(BaseModel):
     """Completed worker task with output."""
     worker_id: str
     claude_session_id: str
-    std_out: str
-    std_err: str
+    output_file: str  # Absolute path to logs/worker-{id}.json
     timeout: float
 
 
@@ -38,8 +38,8 @@ class FailedTask(BaseModel):
     """Failed worker task with error details."""
     worker_id: str
     returncode: int
-    stderr: str
-    error: str
+    output_file: Optional[str]  # Path to partial output if exists
+    error_hint: str  # Brief actionable hint (max 150 chars)
     timeout: float
 
 

@@ -69,9 +69,11 @@ async def test_e2e_create_wait_resume():
         # 3. Access data from wait() response (no need for peek)
         print("\n[3/5] Accessing worker data from wait() response...")
         session_id = complete_task["claude_session_id"]
+        output_file = complete_task["output_file"]
         print(f"✓ Session ID: {session_id}")
-        print(f"✓ Stdout length: {len(complete_task['std_out'])}")
+        print(f"✓ Output file: {output_file}")
         assert session_id is not None
+        assert output_file is not None
 
         # 4. Resume with new input
         print("\n[4/5] Resuming worker with new input...")
@@ -90,7 +92,7 @@ async def test_e2e_create_wait_resume():
         second_task = complete_tasks[0]
         assert second_task["worker_id"] == worker_id
         print("✓ Second completion received")
-        print(f"✓ Final stdout length: {len(second_task['std_out'])}")
+        print(f"✓ Final output file: {second_task['output_file']}")
 
         print("\n" + "=" * 70)
         print("E2E TEST COMPLETE ✅")
@@ -171,8 +173,9 @@ async def test_access_completed_task_data():
         # Access data directly from wait() response
         print(f"✓ Worker ID from wait(): {task['worker_id']}")
         print(f"✓ Session ID from wait(): {task['claude_session_id']}")
-        print(f"✓ Stdout length: {len(task['std_out'])}")
+        print(f"✓ Output file: {task['output_file']}")
         assert task["claude_session_id"] is not None
+        assert task["output_file"] is not None
 
         print("\n" + "=" * 70)
         print("INTEGRATION TEST COMPLETE ✅")
@@ -231,7 +234,7 @@ async def test_session_resumption_maintains_context():
         print("✓ Second turn complete")
 
         # Access final output from wait() response
-        print(f"✓ Total conversation length: {len(second_task['std_out'])}")
+        print(f"✓ Output file: {second_task['output_file']}")
 
         print("\n" + "=" * 70)
         print("INTEGRATION TEST COMPLETE ✅")

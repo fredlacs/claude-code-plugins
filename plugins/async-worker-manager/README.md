@@ -11,10 +11,10 @@ Fire up multiple Claude workers, wait them to completion, and resume conversatio
 Manage multiple Claude Code workers as async subprocesses using a racing pattern:
 
 ```
-create_async_worker(prompt)      → Spawn worker, returns task_id
-wait(timeout)             → Wait for first completion, returns winner
-peek(worker_id)                   → View stdout/stderr of complete worker
-write_to_worker(worker_id, input) → Resume completed worker
+create_async_worker(prompt)           → Spawn worker, returns task_id
+wait(timeout)                         → Wait for completion, returns WorkerState
+resume_worker(worker_id, message)     → Resume completed worker
+approve_worker_permission(...)         → Approve pending permissions
 ```
 
 ---
@@ -78,6 +78,28 @@ uv run python src/server.py
 
 ---
 
+## Worker Output Files
+
+Workers write output to deterministic file paths for minimal context usage:
+- **JSON output**: `logs/worker-{worker_id}.json` (in plugin directory)
+- Absolute path returned in `CompleteTask.output_file`
+
+Use bash tools to inspect when needed:
+```bash
+# Full output
+cat logs/worker-{worker_id}.json
+
+# Extract specific fields
+jq -r .result logs/worker-{worker_id}.json
+jq .total_cost_usd logs/worker-{worker_id}.json
+jq .duration_ms logs/worker-{worker_id}.json
+
+# Preview
+head -20 logs/worker-{worker_id}.json
+```
+
+---
+
 ## Example Usage
 
 Use via Claude Code's MCP integration, or programmatically:
@@ -98,21 +120,23 @@ async with Client(mcp) as client:
     })
 
     # 2. Wait to find first completion
-    winner = await client.call_tool("wait", {"timeout": 60.0})
-    print(f"Winner: {winner}")
+    state = await client.call_tool("wait", {"timeout": 60.0})
+    winner = state["completed"][0]
+    print(f"Worker ID: {winner['worker_id']}")
+    print(f"Output file: {winner['output_file']}")
 
-    # 3. Peek at the output
-    result = await client.call_tool("peek", {"worker_id": winner})
-    print(f"Output: {result['stdout']}")
+    # 3. Access output via file (use bash tools like cat, jq)
+    # cat {winner['output_file']}
+    # jq -r .result {winner['output_file']}
 
     # 4. Resume conversation (uses original worker timeout)
-    await client.call_tool("write_to_worker", {
-        "worker_id": winner,
-        "input": "Can you elaborate on that?"
+    await client.call_tool("resume_worker", {
+        "worker_id": winner['worker_id'],
+        "message": "Can you elaborate on that?"
     })
 
     # 5. Wait again for response
-    winner = await client.call_tool("wait", {"timeout": 60.0})
+    state = await client.call_tool("wait", {"timeout": 60.0})
 ```
 
 ---
@@ -148,70 +172,49 @@ task_id = await client.call_tool("create_async_worker", {
 
 ---
 
-### wait(timeout: float = 30.0) → str
+### wait(timeout: float = 30.0) → WorkerState
 
-Wait for the first active worker to complete.
+Wait for workers to complete or request permissions.
 
-**Returns:** `task_id` of winning worker
-**Raises:** ToolError on timeout or if no active workers
+**Returns:** `WorkerState` with completed/failed workers and pending permissions
+**Raises:** ToolError if no active workers
 
 ```python
-winner = await client.call_tool("wait", {"timeout": 60.0})
-# → "a1b2c3d4-..."
+state = await client.call_tool("wait", {"timeout": 60.0})
+# → {
+#   "completed": [{"worker_id": "...", "output_file": "/path/to/logs/worker-xyz.json", ...}],
+#   "failed": [],
+#   "pending_permissions": []
+# }
 ```
 
 **Behavior:**
-- Moves winner from active → complete
-- Returns immediately when any worker finishes
-- Times out if no worker completes within timeout
+- Event-driven: Returns instantly when workers complete (<100ms latency)
+- Returns WorkerState with file paths to output (not full content)
+- Completed workers include `output_file` path for file-based access
+- Failed workers include `error_hint` with actionable guidance
 
 ---
 
-### peek(worker_id: str) → dict
-
-View stdout/stderr of a complete worker.
-
-**Returns:** dict with status, stdout, stderr
-**Raises:** ToolError if worker not found or not complete
-
-```python
-result = await client.call_tool("peek", {"worker_id": task_id})
-```
-
-**Response format:**
-
-```json
-{
-  "task_id": "...",
-  "status": "complete",
-  "session_id": "session-123",
-  "stdout": "Hello world!",
-  "stderr": ""
-}
-```
-
----
-
-### write_to_worker(worker_id: str, input: str) → dict
+### resume_worker(worker_id: str, message: str)
 
 Resume a completed worker with new input.
 
-**Returns:** Success message
-**Raises:** ToolError if worker not found or not in complete state
+**Returns:** Success confirmation
+**Raises:** ToolError if worker not found
 
 ```python
-result = await client.call_tool("write_to_worker", {
-    "worker_id": task_id,
-    "input": "Can you elaborate on that?"
+await client.call_tool("resume_worker", {
+    "worker_id": worker_id,
+    "message": "Can you elaborate on that?"
 })
-# → {"success": true, "message": "Resumed worker ..."}
 ```
 
 **Behavior:**
-- Worker must be in complete state (after wait)
 - Uses `claude --resume <session_id>` to continue conversation
 - Moves worker back to active state
 - Use wait() again to wait for response
+- Original timeout is preserved
 
 ---
 
@@ -230,8 +233,9 @@ for topic in ["async patterns", "concurrency models", "event loops"]:
     tasks.append(result.data)
 
 # Get first result
-winner = await client.call_tool("wait", {"timeout": 120.0})
-result = await client.call_tool("peek", {"worker_id": winner})
+state = await client.call_tool("wait", {"timeout": 120.0})
+winner = state["completed"][0]
+# Access output: cat {winner['output_file']} | jq -r .result
 ```
 
 ### 2. Interactive Multi-Agent System
@@ -248,12 +252,13 @@ coder = await client.call_tool("create_async_worker", {
 })
 
 # Wait to see who finishes first
-winner = await client.call_tool("wait", {"timeout": 60.0})
+state = await client.call_tool("wait", {"timeout": 60.0})
+winner = state["completed"][0]
 
 # Continue conversation with winner
-await client.call_tool("write_to_worker", {
-    "worker_id": winner,
-    "input": "Can you provide more detail?"
+await client.call_tool("resume_worker", {
+    "worker_id": winner["worker_id"],
+    "message": "Can you provide more detail?"
 })
 ```
 
@@ -271,9 +276,12 @@ for i in range(5):
 # Process results as they complete
 while True:
     try:
-        winner = await client.call_tool("wait", {"timeout": 60.0})
-        result = await client.call_tool("peek", {"worker_id": winner})
-        print(f"Completed: {result['stdout']}")
+        state = await client.call_tool("wait", {"timeout": 60.0})
+        for worker in state["completed"]:
+            # Access output file if needed
+            print(f"Completed: {worker['worker_id']}")
+            print(f"Output file: {worker['output_file']}")
+            # Use: cat {worker['output_file']} | jq -r .result
     except Exception as e:
         if "No active workers" in str(e):
             break  # All workers complete
