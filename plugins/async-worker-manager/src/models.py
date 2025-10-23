@@ -4,8 +4,10 @@ from asyncio import Event, Task
 import socket
 from enum import Enum
 from pydantic import BaseModel
-from typing import Optional, Literal, List
-from .unix_socket_manager import UnixSocketManager
+from typing import Optional, Literal, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .unix_socket_manager import UnixSocketManager
 
 @dataclass
 class ClaudeJobResult:
@@ -32,10 +34,20 @@ class CompleteTask:
     timeout: float
 
 
+class FailedTask(BaseModel):
+    """Failed worker task with error details."""
+    worker_id: str
+    returncode: int
+    stderr: str
+    error: str
+    timeout: float
+
+
 class WorkerStatus(Enum):
     """Enum for tracking worker lifecycle state."""
     ACTIVE = "active"
     COMPLETED = "completed"
+    FAILED = "failed"
 
 
 @dataclass
@@ -58,6 +70,7 @@ class WorkerState:
     Returned by wait() to provide complete visibility into worker status.
     """
     completed: List['CompleteTask']
+    failed: List['FailedTask']
     pending_permissions: List['PermissionRequest']
 
 

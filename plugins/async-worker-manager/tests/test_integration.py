@@ -72,7 +72,7 @@ async def test_e2e_create_wait_peek_write():
 
         # 4. Resume with new input
         print("\n[5/6] Resuming worker with new input...")
-        await client.call_tool("write_to_worker", {
+        await client.call_tool("resume_worker", {
             "worker_id": worker_id,
             "message": "Now say 'Goodbye!' and nothing else"
         })
@@ -213,7 +213,7 @@ async def test_session_resumption_maintains_context():
         assert session_id is not None
 
         print("\n[4/5] Resuming with follow-up...")
-        await client.call_tool("write_to_worker", {
+        await client.call_tool("resume_worker", {
             "worker_id": worker_id,
             "message": "Say 'Done!' and nothing else"
         })

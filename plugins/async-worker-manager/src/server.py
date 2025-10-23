@@ -11,6 +11,7 @@ from .models import (
     ActiveTask,
     ClaudeJobResult,
     CompleteTask,
+    FailedTask,
     PermissionRequest,
     Worker,
     WorkerState,
@@ -54,7 +55,7 @@ async def peek(worker_id: str) -> CompleteTask:
     if worker_id in active_tasks:
         # Flush any completed tasks, including this one if it's done
         # Use a tiny bit more than 0 to catch recently completed tasks
-        _ = await _flush_completed_tasks(timeout=0.01)
+        _, _ = await _flush_completed_tasks(timeout=0.01)
 
     # Check complete_tasks (legacy dict for backward compat)
     if worker_id not in complete_tasks:
@@ -64,11 +65,11 @@ async def peek(worker_id: str) -> CompleteTask:
 
 
 @mcp.tool
-async def write_to_worker(worker_id: str, message: str):
-    """Send message to worker and resume conversation."""
+async def resume_worker(worker_id: str, message: str):
+    """Resume a completed worker's conversation with a new message."""
     # Try to flush if worker is still active
     if worker_id in active_tasks:
-        _ = await _flush_completed_tasks(timeout=0.0)
+        _, _ = await _flush_completed_tasks(timeout=0.0)
 
     # Check complete_tasks (legacy dict for backward compat)
     if worker_id not in complete_tasks:
@@ -129,17 +130,17 @@ async def wait(
             remaining_timeout = timeout - elapsed
             if remaining_timeout <= 0:
                 # Timeout - return current state (may be empty)
-                return WorkerState(completed=[], pending_permissions=[])
+                return WorkerState(completed=[], failed=[], pending_permissions=[])
 
             # Quick check for completions (non-blocking)
-            completed = await _flush_completed_tasks(timeout=0.0)
+            completed, failed = await _flush_completed_tasks(timeout=0.0)
 
             # Check for pending permissions
             pending_perms = _get_pending_permissions()
 
-            # Return if we have either completions or permissions
-            if completed or pending_perms:
-                return WorkerState(completed=completed, pending_permissions=pending_perms)
+            # Return if we have either completions, failures, or permissions
+            if completed or failed or pending_perms:
+                return WorkerState(completed=completed, failed=failed, pending_permissions=pending_perms)
 
             # Sleep briefly before next poll
             await asyncio.sleep(0.5)
@@ -156,6 +157,7 @@ async def wait(
             if worker_id in complete_tasks:
                 return WorkerState(
                     completed=[complete_tasks[worker_id]],
+                    failed=[],
                     pending_permissions=_get_pending_permissions(worker_id)
                 )
 
@@ -164,12 +166,22 @@ async def wait(
                 raise ToolError(f"Worker {worker_id} not found in active tasks")
 
             # Quick check for completions
-            await _flush_completed_tasks(timeout=0.0)
+            completed, failed = await _flush_completed_tasks(timeout=0.0)
 
             # Check again if worker completed
             if worker_id in complete_tasks:
                 return WorkerState(
                     completed=[complete_tasks[worker_id]],
+                    failed=[],
+                    pending_permissions=_get_pending_permissions(worker_id)
+                )
+
+            # Check if this specific worker failed
+            worker_failed = [f for f in failed if f.worker_id == worker_id]
+            if worker_failed:
+                return WorkerState(
+                    completed=[],
+                    failed=worker_failed,
                     pending_permissions=_get_pending_permissions(worker_id)
                 )
 
@@ -178,6 +190,7 @@ async def wait(
             if pending_perms:
                 return WorkerState(
                     completed=[],
+                    failed=[],
                     pending_permissions=pending_perms
                 )
 
@@ -338,10 +351,10 @@ async def approve_worker_permission(
     return await mgr.approve_request(request_id, allow, message)
 
 
-async def _flush_completed_tasks(timeout: float) -> List[CompleteTask]:
+async def _flush_completed_tasks(timeout: float) -> tuple[List[CompleteTask], List[FailedTask]]:
     # Use legacy active_tasks dict for backward compat
     if not active_tasks:
-        return []
+        return [], []
 
     done, _ = await asyncio.wait(
         (task.task for task in active_tasks.values()),
@@ -349,48 +362,63 @@ async def _flush_completed_tasks(timeout: float) -> List[CompleteTask]:
         return_when=asyncio.FIRST_COMPLETED,
     )
     if not done:
-        return []
+        return [], []
 
     results = [task.result() for task in done]
-    failures = [r for r in results if r.returncode != 0]
-    if len(failures) > 0:
-        # Show stderr from failed workers for debugging
-        error_details = "\n".join([
-            f"Worker {r.worker_id} failed (code {r.returncode}):\nSTDERR: {r.stderr[:500]}"
-            for r in failures
-        ])
-        raise ToolError(f"One or more workers failed:\n{error_details}")
 
-    def materialize(result: ClaudeJobResult) -> CompleteTask:
-        data = json.loads(result.stdout)
-        session_id = data.get("session_id")
-        if not isinstance(session_id, str):
-            raise ToolError(f"Invalid or missing session_id: {session_id}")
+    completed = []
+    failed = []
 
-        # Get the active task
-        active = active_tasks.pop(result.worker_id)
+    for result in results:
+        if result.returncode != 0:
+            # Get the active task
+            active = active_tasks.pop(result.worker_id)
 
-        # Create CompleteTask
-        complete = CompleteTask(
-            result.worker_id,
-            session_id,
-            result.stdout,
-            result.stderr,
-            active.timeout,
-        )
+            # Create FailedTask
+            failed_task = FailedTask(
+                worker_id=result.worker_id,
+                returncode=result.returncode,
+                stderr=result.stderr[:500],  # Truncate stderr
+                error=f"Worker exited with code {result.returncode}",
+                timeout=active.timeout
+            )
+            failed.append(failed_task)
 
-        # Transition ACTIVE -> COMPLETED in workers dict if exists
-        if result.worker_id in workers:
-            workers[result.worker_id].status = WorkerStatus.COMPLETED
-            workers[result.worker_id].task = None
-            workers[result.worker_id].complete_task = complete
+            # Transition ACTIVE -> FAILED in workers dict if exists
+            if result.worker_id in workers:
+                workers[result.worker_id].status = WorkerStatus.FAILED
+                workers[result.worker_id].task = None
+        else:
+            # Materialize successful completion
+            data = json.loads(result.stdout)
+            session_id = data.get("session_id")
+            if not isinstance(session_id, str):
+                raise ToolError(f"Invalid or missing session_id: {session_id}")
 
-        # Maintain legacy dict for test compatibility
-        complete_tasks[result.worker_id] = complete
+            # Get the active task
+            active = active_tasks.pop(result.worker_id)
 
-        return complete
+            # Create CompleteTask
+            complete = CompleteTask(
+                result.worker_id,
+                session_id,
+                result.stdout,
+                result.stderr,
+                active.timeout,
+            )
 
-    return [materialize(result) for result in results]
+            # Transition ACTIVE -> COMPLETED in workers dict if exists
+            if result.worker_id in workers:
+                workers[result.worker_id].status = WorkerStatus.COMPLETED
+                workers[result.worker_id].task = None
+                workers[result.worker_id].complete_task = complete
+
+            # Maintain legacy dict for test compatibility
+            complete_tasks[result.worker_id] = complete
+
+            completed.append(complete)
+
+    return completed, failed
 
 
 if __name__ == "__main__":

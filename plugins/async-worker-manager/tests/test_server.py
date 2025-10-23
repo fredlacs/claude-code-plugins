@@ -172,11 +172,11 @@ async def test_peek_nonexistent_worker():
         assert "not found" in str(exc_info.value)
 
 
-# --- Test write_to_worker ---
+# --- Test resume_worker ---
 
 @pytest.mark.anyio
-async def test_write_to_worker_resumes_conversation():
-    """Test that write_to_worker resumes a complete worker."""
+async def test_resume_worker_resumes_conversation():
+    """Test that resume_worker resumes a complete worker."""
     complete_tasks["task-1"] = CompleteTask(
         worker_id="task-1",
         claude_session_id="session-123",
@@ -198,7 +198,7 @@ async def test_write_to_worker_resumes_conversation():
         mock_exec.return_value = mock_proc
 
         async with Client(mcp) as client:
-            await client.call_tool("write_to_worker", {
+            await client.call_tool("resume_worker", {
                 "worker_id": "task-1",
                 "message": "Follow up"
             })
@@ -217,11 +217,11 @@ async def test_write_to_worker_resumes_conversation():
 
 
 @pytest.mark.anyio
-async def test_write_to_worker_nonexistent():
-    """Test writing to non-existent worker raises error."""
+async def test_resume_worker_nonexistent():
+    """Test resuming non-existent worker raises error."""
     async with Client(mcp) as client:
         with pytest.raises(Exception) as exc_info:
-            await client.call_tool("write_to_worker", {
+            await client.call_tool("resume_worker", {
                 "worker_id": "nonexistent",
                 "message": "test"
             })
@@ -301,8 +301,36 @@ async def test_wait_timeout():
 
 
 @pytest.mark.anyio
+async def test_wait_returns_failed_workers():
+    """Test that wait() returns failed workers in WorkerState.failed."""
+    # Create a task that will fail
+    async def failing_worker():
+        return ClaudeJobResult(
+            worker_id="task-1",
+            returncode=1,
+            stdout="",
+            stderr="Error: something went wrong"
+        )
+
+    task = asyncio.create_task(failing_worker())
+    await task  # Let it complete
+
+    active_tasks["task-1"] = ActiveTask(worker_id="task-1", task=task, timeout=300.0)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("wait", {"timeout": 5.0})
+
+        # Should have failed task, not raise exception
+        assert "failed" in result.structured_content
+        assert len(result.structured_content["failed"]) == 1
+        assert result.structured_content["failed"][0]["worker_id"] == "task-1"
+        assert result.structured_content["failed"][0]["returncode"] == 1
+        assert "Error: something went wrong" in result.structured_content["failed"][0]["stderr"]
+
+
+@pytest.mark.anyio
 async def test_wait_bad_return_code():
-    """Test waitwith bad return code raises error."""
+    """Test that wait() returns failed workers (not exceptions) for bad return codes."""
     # Create a real task that returns bad exit code
     async def bad_return_code():
         return ClaudeJobResult(worker_id="task-1", returncode=1, stdout="", stderr="error")
@@ -313,10 +341,52 @@ async def test_wait_bad_return_code():
     active_tasks["task-1"] = ActiveTask(worker_id="task-1", task=task, timeout=300.0)
 
     async with Client(mcp) as client:
-        with pytest.raises(Exception) as exc_info:
-            await client.call_tool("wait", {"timeout": 5.0})
-        error_msg = str(exc_info.value).lower()
-        assert "one or more workers failed" in error_msg or "worker" in error_msg
+        result = await client.call_tool("wait", {"timeout": 5.0})
+
+        # Should return failed task in WorkerState, not raise exception
+        assert "failed" in result.structured_content
+        assert len(result.structured_content["failed"]) == 1
+        assert result.structured_content["failed"][0]["worker_id"] == "task-1"
+        assert result.structured_content["failed"][0]["returncode"] == 1
+
+
+@pytest.mark.anyio
+async def test_wait_mixed_success_and_failure():
+    """Test that wait() returns both successful and failed workers."""
+    # Create tasks with mixed outcomes
+    async def successful_worker():
+        return ClaudeJobResult(
+            worker_id="task-success",
+            returncode=0,
+            stdout=json.dumps({"session_id": "session-1"}),
+            stderr=""
+        )
+
+    async def failing_worker():
+        return ClaudeJobResult(
+            worker_id="task-fail",
+            returncode=1,
+            stdout="",
+            stderr="Error occurred"
+        )
+
+    task_success = asyncio.create_task(successful_worker())
+    task_fail = asyncio.create_task(failing_worker())
+    await asyncio.gather(task_success, task_fail)
+
+    active_tasks["task-success"] = ActiveTask(worker_id="task-success", task=task_success, timeout=300.0)
+    active_tasks["task-fail"] = ActiveTask(worker_id="task-fail", task=task_fail, timeout=300.0)
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("wait", {"timeout": 5.0})
+
+        # Should have both completed and failed
+        assert "completed" in result.structured_content
+        assert "failed" in result.structured_content
+        assert len(result.structured_content["completed"]) == 1
+        assert len(result.structured_content["failed"]) == 1
+        assert result.structured_content["completed"][0]["worker_id"] == "task-success"
+        assert result.structured_content["failed"][0]["worker_id"] == "task-fail"
 
 
 @pytest.mark.anyio
