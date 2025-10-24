@@ -171,7 +171,9 @@ async def run_claude_job(
 
     try:
         out_bytes, err_bytes = await proc.communicate()
-        output_file.write_text(out_bytes.decode("utf-8"))
+        output_file.write_text(
+            json.dumps(json.loads(out_bytes.decode("utf-8")), indent=2)
+        )
 
         if proc.returncode != 0:
             raise ToolError(
