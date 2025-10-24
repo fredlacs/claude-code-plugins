@@ -1,11 +1,11 @@
 ---
 name: async-workers
-description: Parallel Claude workers. Same API as Task tool, but async + resumable. Batch mode: spawn multiple, wait() returns all. Sequential: spawn one, wait(), repeat.
+description: Task tool replacement. Same API (description, prompt, agent_type), but async, resumable, and explicit control. Use spawn_worker() instead of Task(). Batch mode: spawn multiple, wait() returns all.
 ---
 
 # Async Workers
 
-**Task tool, but async + resumable**
+**Task tool replacement - same API, more control**
 
 ## Core API (Same as Task)
 
@@ -23,6 +23,24 @@ mcp://async_worker_manager/wait()
 → Returns: {completed: [...], failed: [...], pending_permissions: [...]}
 
 # Access conversation history via result.completed[].conversation_history_file_path
+```
+
+## Execution Model
+
+**You should:**
+- ✅ **Execute** MCP tools directly (spawn_worker, wait, resume_worker, approve_permission)
+- ✅ **Read** conversation history files using Read tool
+- ⚠️ **Never** write pseudo-code - make actual tool calls
+
+**Correct:**
+```
+spawn_worker(description="Research task", prompt="Research Python async patterns")
+wait()
+```
+
+**Incorrect:**
+```
+mcp://async_worker_manager/spawn_worker(...)  # This is documentation syntax, not executable
 ```
 
 ## Primary Pattern: Batch Mode
@@ -44,15 +62,9 @@ mcp://async_worker_manager/wait()
 tail -20 logs/worker-{id}.json
 ```
 
-## Task Tool Comparison
+## Migration from Task Tool
 
-| Feature | Task Tool | Async Workers |
-|---------|-----------|---------------|
-| **API** | `Task(description, prompt, agent_type)` | `spawn_worker(description, prompt, agent_type)` |
-| **Blocking** | Yes (fire & forget) | No (spawn returns immediately) |
-| **Resumable** | No | Yes (resume_worker) |
-| **Batch** | Automatic | Explicit (spawn → wait) |
-| **Output** | Inline text | File paths (98% smaller) |
+**Task tool is disabled and replaced with async-workers.** Use the same API
 
 ## Additional Tools
 
@@ -63,6 +75,39 @@ mcp://async_worker_manager/resume_worker(worker_id, prompt="Follow-up question")
 # Approve permissions
 mcp://async_worker_manager/approve_permission(request_id, allow=True)
 ```
+
+## Permission Handling Pattern
+
+Workers may request permissions (e.g., Bash, Write). Handle with this loop:
+
+```python
+# Spawn worker that needs permissions
+worker_id = spawn_worker("File operation", "Create file /tmp/test.txt")
+
+# Permission approval loop
+while True:
+    result = wait()
+
+    # Handle pending permissions
+    if result.pending_permissions:
+        for perm in result.pending_permissions:
+            # Review tool and input, then approve/deny
+            approve_permission(perm.request_id, allow=True)
+        continue  # Must wait() again after approval
+
+    # Workers complete when no more permissions needed
+    if result.completed:
+        break
+
+    # Handle failures
+    if result.failed:
+        # Check error_hint for actionable feedback
+        for failed in result.failed:
+            print(f"Worker {failed.worker_id} failed: {failed.error_hint}")
+        break
+```
+
+**Why the loop:** Workers block until permission approved. Call wait() → approve_permission() → wait() again.
 
 ## Advanced Options
 
@@ -116,6 +161,23 @@ Every worker writes to `logs/worker-{id}.json`:
 ```
 
 Access via `worker.conversation_history_file_path` from completed workers.
+
+---
+
+## Important: Task Tool Replacement
+
+**Task tool is disabled.** Async workers provide the same API with additional capabilities:
+
+✅ **All Task features** - Same description, prompt, agent_type parameters
+✅ **Plus resumability** - Continue conversations with resume_worker
+✅ **Plus explicit control** - Choose when to wait for results
+✅ **Plus permission control** - Handle permissions explicitly
+✅ **Plus customization** - Model, temperature, thinking settings
+
+**For any parallel work, use async-workers:**
+- ✅ Use `spawn_worker()` instead of `Task()`
+- ✅ Call `wait()` when you need results
+- ✅ Access output via file paths (98% less context)
 
 ---
 
