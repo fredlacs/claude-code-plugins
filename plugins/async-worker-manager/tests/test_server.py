@@ -430,4 +430,55 @@ async def test_multiple_workers_concurrent():
                     assert all(workers[wid].status == WorkerStatus.ACTIVE for wid in worker_ids)
 
 
-# Options are tested in integration tests
+@pytest.mark.anyio
+async def test_spawn_worker_with_options():
+    """Test that options parameter works with Pydantic model."""
+    with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
+        with patch('src.server.UnixSocketManager') as mock_socket_mgr:
+            mock_mgr_instance = Mock()
+            mock_mgr_instance.get_env_vars = Mock(return_value={})
+
+            async def mock_aenter(*args):
+                return mock_mgr_instance
+            async def mock_aexit(*args):
+                return None
+
+            mock_socket_mgr.return_value.__aenter__ = mock_aenter
+            mock_socket_mgr.return_value.__aexit__ = mock_aexit
+
+            with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
+                mock_proc = Mock()
+                mock_proc.communicate = AsyncMock(return_value=(
+                    json.dumps({"session_id": "test-123"}).encode(),
+                    b""
+                ))
+                mock_proc.returncode = 0
+                mock_proc.stdin = Mock()
+                mock_proc.stdin.close = Mock(return_value=None)
+                mock_exec.return_value = mock_proc
+
+                async with Client(mcp) as client:
+                    # Test with options dict (should auto-convert)
+                    result = await client.call_tool("spawn_worker", {
+                        "description": "Test with options",
+                        "prompt": "test",
+                        "options": {
+                            "model": "claude-haiku-4",
+                            "temperature": 0.5,
+                            "thinking": True
+                        }
+                    })
+
+                    assert isinstance(result.data, str)
+
+                    # Verify subprocess called with correct args
+                    call_args = mock_exec.call_args[0]
+                    assert "--model" in call_args
+                    assert "claude-haiku-4" in call_args
+
+                    # Verify settings JSON includes temperature and thinking
+                    settings_idx = call_args.index("--settings")
+                    settings_json = call_args[settings_idx + 1]
+                    settings = json.loads(settings_json)
+                    assert settings["temperature"] == 0.5
+                    assert settings["thinking"]["type"] == "enabled"

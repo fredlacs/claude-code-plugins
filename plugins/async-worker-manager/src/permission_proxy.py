@@ -10,18 +10,14 @@ Uses newline-delimited JSON protocol over Unix domain sockets.
 """
 import asyncio
 import os
-import sys
 import json
+import sys
 import uuid
 from typing import List
 from fastmcp import FastMCP
 from mcp.types import TextContent, Content
 
-# Import models - need to add parent dir to path for standalone MCP server
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
-from models import PermissionResponse, PermissionRequest, PermissionResponseMessage
+from .models import PermissionResponse, PermissionRequest, PermissionResponseMessage
 
 mcp = FastMCP("Permission Proxy")
 socket_path = os.environ.get("PERM_SOCKET_PATH")

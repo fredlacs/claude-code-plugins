@@ -72,7 +72,7 @@ async def spawn_worker(
 
     # Parse options
     if options is None:
-        options = {}
+        options = WorkerOptions()
 
     # Count active workers
     active_count = sum(1 for w in workers.values() if w.status == WorkerStatus.ACTIVE)
@@ -278,12 +278,11 @@ async def run_claude_job(
             workers[worker_id].socket_mgr = socket_mgr
 
         try:
-            # Get paths for permission_proxy.py
+            # Get plugin root for uv run --directory
             plugin_root = os.environ.get('CLAUDE_PLUGIN_ROOT', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            permission_proxy_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'permission_proxy.py')
 
             # Create MCP config JSON for permission proxy server
-            # Use uv run to ensure we're in the right venv with fastmcp
+            # Use uv run with python -m to properly handle package imports
             mcp_config = {
                 "mcpServers": {
                     "permission_proxy": {
@@ -291,7 +290,7 @@ async def run_claude_job(
                         "args": [
                             "run",
                             "--directory", plugin_root,
-                            "python", permission_proxy_path
+                            "python", "-m", "src.permission_proxy"
                         ]
                     }
                 }
@@ -303,8 +302,8 @@ async def run_claude_job(
                 cmd += ["--resume", session_id]
 
             # Add model
-            if options and options.get("model"):
-                cmd += ["--model", options["model"]]
+            if options.model:
+                cmd += ["--model", options.model]
 
             if agent_type:
                 cmd += [
@@ -314,17 +313,17 @@ async def run_claude_job(
 
 
             settings = {}
-            if options and options.get("temperature"):
-                settings["temperature"] = options["temperature"]
-            if options and options.get("max_tokens"):
-                settings["maxTokens"] = options["max_tokens"]
-            if options and options.get("thinking"):
+            if options.temperature != 1.0:  # Only if non-default
+                settings["temperature"] = options.temperature
+            if options.max_tokens is not None:
+                settings["maxTokens"] = options.max_tokens
+            if options.thinking:
                 settings["thinking"] = {"type": "enabled", "budget_tokens": 10000}
-            if options and options.get("top_p") is not None:
-                settings["topP"] = options["top_p"]
-            if options and options.get("top_k") is not None:
-                settings["topK"] = options["top_k"]
-            
+            if options.top_p is not None:
+                settings["topP"] = options.top_p
+            if options.top_k is not None:
+                settings["topK"] = options.top_k
+
             if settings:
                 settings_json = json.dumps(settings)
                 cmd += ["--settings", settings_json]

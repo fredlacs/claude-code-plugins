@@ -187,7 +187,7 @@ WorkerResult = Union[WorkerCompleted, WorkerFailed, PermissionNeeded, WaitTimedO
 class WorkerOptions(BaseModel):
     model: Optional[str] = "claude-sonnet-4-5"
     temperature: Optional[float] = 1.0
-    max_tokens: Optional[int]
+    max_tokens: Optional[int] = None
     thinking: Optional[bool] = False
     top_p: Optional[float] = None
     top_k: Optional[int] = None
