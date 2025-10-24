@@ -45,7 +45,7 @@ class UnixSocketManager:
         self.worker_id = worker_id
         self.event_queue = event_queue
         self.socket_path = Path(f"/tmp/claude_worker_{worker_id}.sock")
-        self.io_timeout = 30.0
+        self.io_timeout = 600.0
 
         # Internal state
         self._srv: Optional[asyncio.AbstractServer] = None

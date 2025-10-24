@@ -35,7 +35,7 @@ async def request_permission(tool_name: str, input: dict, reason: str = "", tool
         # Open async Unix connection with timeout
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(socket_path),
-            timeout=30.0
+            timeout=600.0
         )
     except (OSError, asyncio.TimeoutError) as e:
         sys.stderr.write(f"ERROR: Failed to connect to socket {socket_path}: {e}\n")
@@ -54,10 +54,10 @@ async def request_permission(tool_name: str, input: dict, reason: str = "", tool
         # Send request as newline-delimited JSON
         request_json = request.model_dump_json() + "\n"
         writer.write(request_json.encode('utf-8'))
-        await asyncio.wait_for(writer.drain(), timeout=30.0)
+        await asyncio.wait_for(writer.drain(), timeout=600.0)
 
         # Read response line (newline-delimited JSON)
-        response_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
+        response_line = await asyncio.wait_for(reader.readline(), timeout=600.0)
 
         if not response_line:
             sys.stderr.write("ERROR: Socket closed by parent\n")

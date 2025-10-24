@@ -78,21 +78,38 @@ mcp://async_worker_manager/approve_permission(request_id, allow=True)
 
 ## Permission Handling Pattern
 
-Workers may request permissions (e.g., Bash, Write). Handle with this loop:
+Workers may request permissions (e.g., Bash, Write). Handle with AskUserQuestion + approval loop:
 
 ```python
 # Spawn worker that needs permissions
 worker_id = spawn_worker("File operation", "Create file /tmp/test.txt")
 
-# Permission approval loop
+# Permission approval loop with user confirmation
 while True:
     result = wait()
 
     # Handle pending permissions
     if result.pending_permissions:
         for perm in result.pending_permissions:
-            # Review tool and input, then approve/deny
-            approve_permission(perm.request_id, allow=True)
+            # Surface permission request to user via AskUserQuestion
+            answers = AskUserQuestion(
+                questions=[{
+                    "question": f"Allow worker to use {perm.tool} with input: {perm.input}?",
+                    "header": "Permission",
+                    "multiSelect": False,
+                    "options": [
+                        {"label": "Allow", "description": "Grant permission to execute this tool"},
+                        {"label": "Deny", "description": "Reject permission request"}
+                    ]
+                }]
+            )
+
+            # Parse answer: check if user selected "Allow"
+            question_text = f"Allow worker to use {perm.tool} with input: {perm.input}?"
+            allow = (answers[question_text] == "Allow")
+
+            # Apply decision
+            approve_permission(perm.request_id, allow=allow)
         continue  # Must wait() again after approval
 
     # Workers complete when no more permissions needed
@@ -107,7 +124,18 @@ while True:
         break
 ```
 
-**Why the loop:** Workers block until permission approved. Call wait() → approve_permission() → wait() again.
+**Control Flow:**
+1. `wait()` returns pending_permissions
+2. `AskUserQuestion` surfaces each permission to user
+3. Parse `answers` dict: compare answer to "Allow" label
+4. `approve_permission(request_id, allow=<True/False>)` based on answer
+5. `wait()` again to unblock worker
+
+**AskUserQuestion Parameters:**
+- `header`: "Permission" (short label, max 12 chars)
+- `multiSelect`: `False` (binary approve/deny decision)
+- `answers`: Returns dict `{question_text: selected_label}`
+- Parse: `answers[question_text] == "Allow"` → `allow=True`
 
 ## Advanced Options
 

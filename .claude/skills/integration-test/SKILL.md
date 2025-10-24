@@ -7,6 +7,7 @@ allowed-tools:
   - mcp__async_worker_manager__resume_worker
   - mcp__async_worker_manager__approve_permission
   - Read
+  - AskUserQuestion
 ---
 
 # Integration Test Skill
@@ -15,7 +16,7 @@ This skill runs comprehensive integration tests for the async-worker-manager MCP
 
 ## Test Suite Overview
 
-The integration test validates 10 key scenarios:
+The integration test validates 11 key scenarios:
 
 1. **Basic Worker Creation** - Verify worker spawning and ID generation
 2. **Wait for Completion** - Test the wait mechanism
@@ -27,6 +28,7 @@ The integration test validates 10 key scenarios:
 8. **Permission Handling** - Test permission request flow
 9. **Failed Workers** - Validate error handling and hints
 10. **Error Cases** - Validate error messages for invalid operations
+11. **Skill-Guided Permission Flow** - Verify async-workers skill guides agents to handle permissions correctly
 
 ## Detailed Test Scenarios
 
@@ -318,16 +320,72 @@ wait()
 
 ---
 
+### Test 11: Skill-Guided Permission Flow
+**Objective:** Verify that the async-workers skill (from the plugin) guides agents to properly handle permission requests through user interaction.
+
+**Setup:**
+This test must be run by invoking the async-workers skill directly from the plugin:
+```
+User: "Use the async-worker-manager:async-workers skill to create 3 test files in parallel"
+```
+
+**Expected Agent Actions (guided by the async-workers skill):**
+```
+# After skill loads, spawn 3 workers that will request permissions
+mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
+  description: "Create test file 1",
+  prompt: "Create a file at /tmp/async-test-1.txt containing the text 'Worker 1 completed'"
+)
+mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
+  description: "Create test file 2",
+  prompt: "Create a file at /tmp/async-test-2.txt containing the text 'Worker 2 completed'"
+)
+mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
+  description: "Create test file 3",
+  prompt: "Create a file at /tmp/async-test-3.txt containing the text 'Worker 3 completed'"
+)
+
+# Wait for workers
+result = mcp__plugin_async-worker-manager_agent-manager__wait()
+
+# Skill should guide agent to use AskUserQuestion for permissions
+# Then approve_permission based on user responses
+```
+
+**Expected Behavior:**
+- async-workers skill loads from plugin successfully
+- 3 workers spawn
+- `wait()` returns pending_permissions (workers blocked)
+- Agent uses AskUserQuestion tool to surface permissions to user (guided by skill instructions)
+- Agent waits for user responses before calling approve_permission
+
+**Validation:**
+- ✅ Skill instructs agent to handle permissions interactively
+- ✅ Agent calls AskUserQuestion (not approve_permission directly)
+- ✅ Agent presents permission details to user
+- ✅ Agent parses user answers correctly
+- ✅ Agent calls approve_permission based on user input
+
+**Success Criteria:**
+- Agent behavior is guided by async-workers skill instructions, not by explicit prompting
+- AskUserQuestion is used for each permission request
+- Permission approval happens only after user confirmation
+
+**Note:** This test validates that the skill's permission handling pattern is effective at guiding agent behavior without explicit prompting. The test is "sneaky" - the user request doesn't mention permissions or how to handle them, but the skill should guide the agent to use the proper flow.
+
+---
+
 ## Test Execution Strategy
 
 1. **Sequential Execution:** Run Tests 1-4 in order (they build on each other)
 2. **Independent Tests:** Run Tests 5-10 independently
-3. **Cleanup:** No cleanup needed - workers auto-transition states
-4. **File Access:** Use Read tool to access conversation history files
+3. **Skill-Based Test:** Run Test 11 independently (validates skill guidance)
+4. **Cleanup:** No cleanup needed - workers auto-transition states
+5. **File Access:** Use Read tool to access conversation history files
 
 ## Success Criteria
 
-✅ All 10 test scenarios pass without errors
+✅ All 11 test scenarios pass without errors
 ✅ Worker creation returns valid UUIDs
 ✅ Wait mechanism works correctly
 ✅ File-based output is accessible and parseable
@@ -338,6 +396,7 @@ wait()
 ✅ Permission flow works end-to-end
 ✅ Failed workers are reported with helpful hints
 ✅ Error messages are clear and helpful
+✅ Skill guides agents to handle permissions interactively
 ✅ No server crashes or hangs
 
 ## Supporting Files

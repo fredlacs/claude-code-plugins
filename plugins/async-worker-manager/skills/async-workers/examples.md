@@ -120,6 +120,71 @@ mcp://async_worker_manager/spawn_worker(
 mcp://async_worker_manager/wait()
 ```
 
+## 8. Permission Approval with User Confirmation
+
+```
+# Worker that requires permission (e.g., file write, bash execution)
+mcp://async_worker_manager/spawn_worker(
+    description="File creator",
+    prompt="Create a file at /tmp/test.txt with content 'Hello World'"
+)
+
+# Permission handling loop
+while True:
+    result = mcp://async_worker_manager/wait()
+
+    # Check for pending permissions
+    if result.pending_permissions:
+        for perm in result.pending_permissions:
+            # Ask user via AskUserQuestion
+            answers = AskUserQuestion(
+                questions=[{
+                    "question": f"Allow worker to use {perm.tool}?",
+                    "header": "Permission",
+                    "multiSelect": False,
+                    "options": [
+                        {
+                            "label": "Allow",
+                            "description": f"Grant permission for tool: {perm.tool}"
+                        },
+                        {
+                            "label": "Deny",
+                            "description": "Reject this permission request"
+                        }
+                    ]
+                }]
+            )
+
+            # Parse answer and approve/deny
+            question_text = f"Allow worker to use {perm.tool}?"
+            allow = (answers[question_text] == "Allow")
+
+            # Apply decision
+            mcp://async_worker_manager/approve_permission(
+                request_id=perm.request_id,
+                allow=allow,
+                reason="User denied" if not allow else None
+            )
+        continue  # Loop back to wait() after approval
+
+    # Workers completed
+    if result.completed:
+        print("Worker completed successfully")
+        break
+
+    # Handle failures
+    if result.failed:
+        for failed in result.failed:
+            print(f"Worker failed: {failed.error_hint}")
+        break
+```
+
+**Key Points:**
+- `AskUserQuestion` surfaces permission to user before auto-approving
+- `answers` dict maps question text to selected label ("Allow" or "Deny")
+- Compare `answers[question_text] == "Allow"` to determine boolean
+- Must call `wait()` again after `approve_permission` to unblock worker
+
 ## Accessing Results
 
 ```
