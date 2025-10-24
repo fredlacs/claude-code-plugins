@@ -162,6 +162,7 @@ while True:
             # Apply decision
             mcp://async_worker_manager/approve_permission(
                 request_id=perm.request_id,
+                worker_id=perm.worker_id,
                 allow=allow,
                 reason="User denied" if not allow else None
             )

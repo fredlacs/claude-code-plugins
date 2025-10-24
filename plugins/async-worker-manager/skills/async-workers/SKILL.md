@@ -73,7 +73,7 @@ tail -20 logs/worker-{id}.json
 mcp://async_worker_manager/resume_worker(worker_id, prompt="Follow-up question")
 
 # Approve permissions
-mcp://async_worker_manager/approve_permission(request_id, allow=True)
+mcp://async_worker_manager/approve_permission(request_id, worker_id, allow=True)
 ```
 
 ## Permission Handling Pattern
@@ -109,7 +109,11 @@ while True:
             allow = (answers[question_text] == "Allow")
 
             # Apply decision
-            approve_permission(perm.request_id, allow=allow)
+            approve_permission(
+                request_id=perm.request_id,
+                worker_id=perm.worker_id,
+                allow=allow
+            )
         continue  # Must wait() again after approval
 
     # Workers complete when no more permissions needed
@@ -128,7 +132,7 @@ while True:
 1. `wait()` returns pending_permissions
 2. `AskUserQuestion` surfaces each permission to user
 3. Parse `answers` dict: compare answer to "Allow" label
-4. `approve_permission(request_id, allow=<True/False>)` based on answer
+4. `approve_permission(request_id, worker_id, allow=<True/False>)` based on answer
 5. `wait()` again to unblock worker
 
 **AskUserQuestion Parameters:**

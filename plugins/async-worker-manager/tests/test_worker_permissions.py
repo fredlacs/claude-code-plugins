@@ -18,8 +18,12 @@ from fastmcp import Client
 def reset_state():
     """Reset global state before/after each test."""
     workers.clear()
+    # Reset event queue to None to force fresh queue in new event loop
+    server._event_queue = None
     yield
     workers.clear()
+    # Reset event queue
+    server._event_queue = None
 
 
 @pytest.mark.integration
@@ -67,10 +71,12 @@ async def test_worker_needs_bash_permission():
 
         # Handle Root objects - use attributes, not dict keys
         request_id_1 = perm1.request_id if hasattr(perm1, 'request_id') else perm1['request_id']
+        worker_id_1 = perm1.worker_id if hasattr(perm1, 'worker_id') else perm1['worker_id']
         print(f"  Permission 1: {perm1}")
 
         await client.call_tool("approve_permission", {
             "request_id": request_id_1,
+            "worker_id": worker_id_1,
             "allow": True
         })
         print("✓ First permission approved")
@@ -94,6 +100,7 @@ async def test_worker_needs_bash_permission():
 
             # Handle Root objects
             request_id_2 = perm2.request_id if hasattr(perm2, 'request_id') else perm2['request_id']
+            worker_id_2 = perm2.worker_id if hasattr(perm2, 'worker_id') else perm2['worker_id']
             tool_2 = perm2.tool if hasattr(perm2, 'tool') else perm2['tool']
 
             print(f"  Permission 2: {perm2}")
@@ -105,6 +112,7 @@ async def test_worker_needs_bash_permission():
 
             await client.call_tool("approve_permission", {
                 "request_id": request_id_2,
+                "worker_id": worker_id_2,
                 "allow": True
             })
             print("✓ Second permission approved")

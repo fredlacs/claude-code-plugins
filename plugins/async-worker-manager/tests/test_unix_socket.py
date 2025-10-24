@@ -213,8 +213,8 @@ async def test_max_requests_limit():
 
 
 @pytest.mark.anyio
-async def test_io_timeout_is_30_seconds():
-    """Test that I/O timeout is set to 30 seconds."""
+async def test_io_timeout_is_600_seconds():
+    """Test that I/O timeout is set to 600 seconds (10 minutes)."""
     worker_id = "test-worker-timeout"
 
     # Mock server with proper async methods
@@ -224,7 +224,7 @@ async def test_io_timeout_is_30_seconds():
 
     with patch('asyncio.start_unix_server', return_value=mock_server), patch('os.chmod'):
         async with UnixSocketManager(worker_id) as mgr:
-            assert mgr.io_timeout == 30.0
+            assert mgr.io_timeout == 600.0
 
 
 # --- Integration Test (Real socket I/O) ---

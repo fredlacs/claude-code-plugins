@@ -8,7 +8,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.server import mcp, workers, get_event_queue
+from src import server
+from src.server import mcp, workers
 from fastmcp import Client
 
 
@@ -17,25 +18,15 @@ def reset_state():
     """Reset global state before/after each test."""
     workers.clear()
 
-    # Clear event queue
-    queue = get_event_queue()
-    while not queue.empty():
-        try:
-            queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+    # Reset event queue to None to force fresh queue in new event loop
+    server._event_queue = None
 
     yield
 
     workers.clear()
 
-    # Clear event queue
-    queue = get_event_queue()
-    while not queue.empty():
-        try:
-            queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+    # Reset event queue
+    server._event_queue = None
 
 
 @pytest.mark.integration

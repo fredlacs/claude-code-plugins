@@ -1,4 +1,5 @@
 import asyncio
+from itertools import chain
 import json
 import os
 import shutil
@@ -10,8 +11,6 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from .models import (
-    ActiveTask,
-    AgentType,
     ClaudeJobResult,
     CompleteTask,
     CompletionEvent,
@@ -30,11 +29,19 @@ mcp = FastMCP("Async Worker Manager")
 workers: Dict[str, Worker] = {}
 
 # Event queue for worker completion/failure/permission notifications
-_event_queue: Queue = Queue()
+# Lazy-initialized to avoid event loop binding issues
+_event_queue: Optional[Queue] = None
 
 
 def get_event_queue() -> Queue:
-    """Get the event queue for worker notifications."""
+    """Get the event queue for worker notifications.
+
+    Lazy-initializes the queue in the current event loop to avoid
+    "Queue is bound to a different event loop" errors in tests.
+    """
+    global _event_queue
+    if _event_queue is None:
+        _event_queue = Queue()
     return _event_queue
 
 
@@ -100,17 +107,7 @@ async def spawn_worker(
 async def resume_worker(
     worker_id: str, prompt: str, options: Optional[WorkerOptions] = None
 ):
-    """
-    Resume a completed worker with new input.
-
-    Args:
-        worker_id: Worker ID to resume
-        prompt: New input/question for the worker
-        options: Optional settings dict (same as spawn_worker)
-
-    Returns:
-        None (success)
-    """
+    """Resume a completed worker with new input."""
     # Check if worker exists
     if worker_id not in workers:
         raise ToolError(f"Worker {worker_id} not found")
@@ -258,7 +255,6 @@ async def run_claude_job(
     options: Optional[WorkerOptions] = None,
 ) -> ClaudeJobResult:
     """Spawn Claude subprocess with Unix domain socket for permission requests."""
-    # Default to WorkerOptions() if None to avoid AttributeError
     if options is None:
         options = WorkerOptions()
 
@@ -301,7 +297,6 @@ async def run_claude_job(
             if session_id:
                 cmd += ["--resume", session_id]
 
-            # Add model
             if options.model:
                 cmd += ["--model", options.model]
 
@@ -313,7 +308,7 @@ async def run_claude_job(
 
 
             settings = {}
-            if options.temperature != 1.0:  # Only if non-default
+            if options.temperature is not None:
                 settings["temperature"] = options.temperature
             if options.max_tokens is not None:
                 settings["maxTokens"] = options.max_tokens
@@ -336,17 +331,7 @@ async def run_claude_job(
                 "--permission-prompt-tool", "mcp__permission_proxy__request_permission",
             ]
 
-            # Debug logging
-            import sys
             env_vars = socket_mgr.get_env_vars()
-            print(f"\n=== WORKER COMMAND ===", file=sys.stderr)
-            print(f"worker_id: {worker_id}", file=sys.stderr)
-            print(f"cmd: {cmd}", file=sys.stderr)
-            print(f"env vars: {env_vars}", file=sys.stderr)
-            print(f"mcp_config: {mcp_config_json}", file=sys.stderr)
-            print(f"======================\n", file=sys.stderr)
-            sys.stderr.flush()
-
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,  # Changed from DEVNULL - MCP servers need stdin
@@ -388,33 +373,19 @@ async def run_claude_job(
     # UnixSocketManager.__aexit__ handles all socket cleanup automatically
 
 
-def _get_pending_permissions(worker_id: Optional[str] = None) -> List[PermissionRequest]:
-    """
-    Internal helper: Query pending permissions from socket managers.
-
-    Args:
-        worker_id: Optional worker ID to filter by. If not provided, returns all pending permissions.
-
-    Returns:
-        List of pending permission requests with details
-    """
-    results = []
-    if worker_id is not None:
-        # Get permissions for specific worker
-        if worker_id in workers and workers[worker_id].socket_mgr:
-            mgr = workers[worker_id].socket_mgr
-            results.extend(mgr.get_pending_requests())
-    else:
-        # Get permissions for all workers
-        for worker in workers.values():
-            if worker.socket_mgr:
-                results.extend(worker.socket_mgr.get_pending_requests())
-    return results
+def _get_pending_permissions() -> List[PermissionRequest]:
+    """Query pending permissions from socket managers."""
+    return list(chain.from_iterable(
+        w.socket_mgr.get_pending_requests()
+        for w in workers.values()
+        if w.socket_mgr is not None
+    ))
 
 
 @mcp.tool
 async def approve_permission(
     request_id: str,
+    worker_id: str,
     allow: bool,
     reason: Optional[str] = None
 ) -> dict:
@@ -422,30 +393,32 @@ async def approve_permission(
     Approve or deny a worker's permission request.
 
     Unblocks the worker waiting for permission decision.
-    Call wait_for_worker again after this to get next event.
+    Call wait() again after this to get next event.
 
     Args:
         request_id: Unique ID of the permission request (from PermissionNeeded)
+        worker_id: ID of the worker making the request (from PermissionRequest.worker_id)
         allow: True to allow, False to deny
         reason: Optional reason for denial
 
     Returns:
         Status of the approval including tool details
     """
-    # Find worker with this request_id
-    # Request IDs are globally unique, so we can find the worker from any socket manager
-    for worker in workers.values():
-        if worker.socket_mgr:
-            try:
-                return await worker.socket_mgr.approve_request(request_id, allow, reason)
-            except ToolError:
-                # This manager doesn't have this request, try next
-                continue
+    if worker_id not in workers:
+        raise ToolError(
+            f"Worker {worker_id} not found. "
+            f"Worker may have already completed or been removed."
+        )
 
-    raise ToolError(
-        f"Permission request {request_id} not found. "
-        f"Request may have expired or worker already completed."
-    )
+    worker = workers[worker_id]
+
+    if not worker.socket_mgr:
+        raise ToolError(
+            f"Worker {worker_id} has no active socket manager. "
+            f"Worker may have already completed."
+        )
+
+    return await worker.socket_mgr.approve_request(request_id, allow, reason)
 
 
 async def _flush_completed_tasks(timeout: float) -> tuple[List[CompleteTask], List[FailedTask]]:
