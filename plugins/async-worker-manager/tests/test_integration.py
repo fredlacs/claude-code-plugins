@@ -9,20 +9,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import server
-from src.server import mcp, active_tasks, complete_tasks
+from src.server import mcp, tasks
 from fastmcp import Client
 
 
 @pytest.fixture(autouse=True)
 def reset_state():
     """Reset global state before/after each test."""
-    active_tasks.clear()
-    complete_tasks.clear()
+    tasks.clear()
 
     yield
 
-    active_tasks.clear()
-    complete_tasks.clear()
+    tasks.clear()
 
 
 @pytest.mark.integration
