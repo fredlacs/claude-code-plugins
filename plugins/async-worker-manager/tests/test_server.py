@@ -9,7 +9,7 @@ import contextlib
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.server import mcp, workers, _event_queues
+from src.server import mcp, workers, get_event_queue
 from src.models import ClaudeJobResult, WorkerStatus
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -25,7 +25,14 @@ async def reset_state():
             with contextlib.suppress(asyncio.CancelledError):
                 await worker.task
     workers.clear()
-    _event_queues.clear()
+
+    # Clear event queue
+    queue = get_event_queue()
+    while not queue.empty():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
 
     yield
 
@@ -36,7 +43,14 @@ async def reset_state():
             with contextlib.suppress(asyncio.CancelledError):
                 await worker.task
     workers.clear()
-    _event_queues.clear()
+
+    # Clear event queue
+    queue = get_event_queue()
+    while not queue.empty():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
 
     # Give asyncio a chance to clean up
     await asyncio.sleep(0)

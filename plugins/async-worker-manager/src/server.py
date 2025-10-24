@@ -29,17 +29,13 @@ from .unix_socket_manager import UnixSocketManager
 mcp = FastMCP("Async Worker Manager")
 workers: Dict[str, Worker] = {}
 
-# Event queue for instant notifications (created per-loop)
-_event_queues: Dict[int, Queue] = {}
+# Event queue for worker completion/failure/permission notifications
+_event_queue: Queue = Queue()
 
 
 def get_event_queue() -> Queue:
-    """Get or create event queue for current event loop."""
-    loop = asyncio.get_event_loop()
-    loop_id = id(loop)
-    if loop_id not in _event_queues:
-        _event_queues[loop_id] = Queue()
-    return _event_queues[loop_id]
+    """Get the event queue for worker notifications."""
+    return _event_queue
 
 
 

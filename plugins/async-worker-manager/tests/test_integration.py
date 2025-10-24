@@ -1,4 +1,5 @@
 """Integration tests for async worker manager."""
+import asyncio
 import pytest
 import shutil
 import sys
@@ -7,7 +8,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.server import mcp, workers, _event_queues
+from src.server import mcp, workers, get_event_queue
 from fastmcp import Client
 
 
@@ -15,10 +16,26 @@ from fastmcp import Client
 def reset_state():
     """Reset global state before/after each test."""
     workers.clear()
-    _event_queues.clear()
+
+    # Clear event queue
+    queue = get_event_queue()
+    while not queue.empty():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
     yield
+
     workers.clear()
-    _event_queues.clear()
+
+    # Clear event queue
+    queue = get_event_queue()
+    while not queue.empty():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
 
 
 @pytest.mark.integration
