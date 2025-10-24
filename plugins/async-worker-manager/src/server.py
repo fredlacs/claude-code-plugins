@@ -262,6 +262,10 @@ async def run_claude_job(
     options: Optional[WorkerOptions] = None,
 ) -> ClaudeJobResult:
     """Spawn Claude subprocess with Unix domain socket for permission requests."""
+    # Default to WorkerOptions() if None to avoid AttributeError
+    if options is None:
+        options = WorkerOptions()
+
     if not shutil.which("claude"):
         raise ToolError("Claude not in PATH")
 

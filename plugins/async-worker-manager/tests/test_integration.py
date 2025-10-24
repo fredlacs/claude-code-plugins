@@ -150,3 +150,68 @@ async def test_resume_worker():
         print("\n" + "=" * 70)
         print("RESUME TEST COMPLETE ✅")
         print("=" * 70)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not shutil.which("claude"), reason="Requires claude in PATH")
+@pytest.mark.anyio
+async def test_resume_worker_without_options_none_bug():
+    """
+    Test that explicitly reproduces the NoneType AttributeError bug.
+
+    Bug: When resume_worker is called without the options parameter,
+    it defaults to None. The run_claude_job function then tries to
+    access options.model at line 305 without checking if options is None,
+    causing: AttributeError: 'NoneType' object has no attribute 'model'
+
+    This test should FAIL until the bug is fixed.
+    """
+    print("\n" + "=" * 70)
+    print("INTEGRATION TEST: Resume Worker Without Options (Bug Reproduction)")
+    print("=" * 70)
+
+    async with Client(mcp) as client:
+        # Step 1: Spawn a worker (with default options)
+        print("\n[1/4] Spawning worker with default options...")
+        result = await client.call_tool("spawn_worker", {
+            "description": "Initial task",
+            "prompt": "Say 'Hello from worker!' and nothing else"
+        })
+        worker_id = result.data
+        print(f"✓ Spawned: {worker_id}")
+
+        # Step 2: Wait for completion
+        print("\n[2/4] Waiting for first completion...")
+        result = await client.call_tool("wait", {})
+        state = result.data
+
+        assert len(state.completed) >= 1
+        print(f"✓ First completion: {worker_id}")
+
+        # Step 3: Resume WITHOUT passing options parameter (this should trigger the bug)
+        print("\n[3/4] Resuming worker WITHOUT options (options=None)...")
+        print("    ⚠️  This is where the bug should manifest")
+        await client.call_tool("resume_worker", {
+            "worker_id": worker_id,
+            "prompt": "Now say 'Goodbye!' and nothing else"
+            # NOTE: Intentionally NOT passing 'options' parameter
+            # This causes options=None in resume_worker() → run_claude_job()
+        })
+        print("✓ Resume call succeeded (worker queued)")
+
+        # Step 4: Wait for second completion - BUG SHOULD TRIGGER HERE
+        print("\n[4/4] Waiting for second completion...")
+        print("    ⚠️  Bug should trigger during this wait() call")
+        print("    Expected error: AttributeError: 'NoneType' object has no attribute 'model'")
+        print("    Location: src/server.py:305 in run_claude_job()")
+
+        # This should fail with AttributeError
+        result = await client.call_tool("wait", {})
+        state = result.data
+
+        assert len(state.completed) >= 1
+        print("✓ Second completion (if you see this, the bug is FIXED!)")
+
+        print("\n" + "=" * 70)
+        print("RESUME WITHOUT OPTIONS TEST COMPLETE ✅")
+        print("=" * 70)

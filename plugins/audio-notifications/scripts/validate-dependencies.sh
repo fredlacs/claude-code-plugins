@@ -14,4 +14,4 @@ python3 --version >/dev/null 2>&1 || {
 }
 
 echo "✓ Dependencies validated"
-say "Audio Notifications plugin enabled" >/dev/null 2>&1 &
+# say "Audio Notifications plugin enabled" >/dev/null 2>&1 &
