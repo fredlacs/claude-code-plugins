@@ -8,7 +8,10 @@ def main():
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": "Task tool disabled. Use async-worker-manager instead",
+            "permissionDecisionReason": (
+                "Task tool disabled. Use async-workers skill: "
+                "Task-like but resumable with advanced options."
+            ),
         }
     }
     print(json.dumps(output), file=sys.stdout)

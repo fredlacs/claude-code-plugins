@@ -35,15 +35,14 @@ class UnixSocketManager:
     - Approval coordination with main session
 
     Usage:
-        async with UnixSocketManager(worker_id, timeout) as mgr:
+        async with UnixSocketManager(worker_id) as mgr:
             env_vars = mgr.get_env_vars()
             # spawn worker with env_vars
             # manager handles permission requests automatically
     """
 
-    def __init__(self, worker_id: str, timeout: float, event_queue: Optional['Queue'] = None):
+    def __init__(self, worker_id: str, event_queue: Optional['Queue'] = None):
         self.worker_id = worker_id
-        self.timeout = timeout
         self.event_queue = event_queue
         self.socket_path = Path(f"/tmp/claude_worker_{worker_id}.sock")
         self.io_timeout = 30.0

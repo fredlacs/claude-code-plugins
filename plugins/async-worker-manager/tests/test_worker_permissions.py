@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import server
-from src.server import mcp, active_tasks, complete_tasks, workers
+from src.server import mcp, workers
 from fastmcp import Client
 
 
@@ -18,12 +18,8 @@ from fastmcp import Client
 def reset_state():
     """Reset global state before/after each test."""
     workers.clear()
-    active_tasks.clear()
-    complete_tasks.clear()
     yield
     workers.clear()
-    active_tasks.clear()
-    complete_tasks.clear()
 
 
 @pytest.mark.integration
@@ -46,21 +42,18 @@ async def test_worker_needs_bash_permission():
     async with Client(mcp) as client:
         # Create worker that needs Bash permission
         print("\n[1/4] Creating worker that needs Bash...")
-        result = await client.call_tool("create_async_worker", {
-            "prompt": "Generate a random number using bash: echo $((RANDOM % 100))",
-            "timeout": 30.0
+        result = await client.call_tool("spawn_worker", {
+            "description": "Generate random number",
+            "prompt": "Generate a random number using bash: echo $((RANDOM % 100))"
         })
         worker_id = result.data
         print(f"✓ Worker created: {worker_id}")
 
-        # Wait for permission request (wait() returns when permissions are pending)
-        print("\n[2/4] Waiting for permission request...")
-        wait_result = await client.call_tool("wait", {
-            "timeout": 15.0,
-            "worker_id": worker_id
-        })
-        worker_state = wait_result.structured_content
-        pending_perms = worker_state["pending_permissions"]
+        # Wait for worker (wait() returns when all workers complete or need permissions)
+        print("\n[2/4] Waiting for worker...")
+        wait_result = await client.call_tool("wait", {})
+        worker_state = wait_result.data
+        pending_perms = worker_state.pending_permissions if hasattr(worker_state, 'pending_permissions') else worker_state.get("pending_permissions", [])
 
         if not pending_perms:
             pytest.fail(f"No pending permissions found - worker should have requested Bash permission")
@@ -71,80 +64,64 @@ async def test_worker_needs_bash_permission():
         # Approve first permission
         print(f"\n[3/6] Approving first permission...")
         perm1 = pending_perms[0]
-        if hasattr(perm1, 'model_dump'):
-            perm1_dict = perm1.model_dump()
-        elif hasattr(perm1, 'dict'):
-            perm1_dict = perm1.dict()
-        else:
-            perm1_dict = perm1
 
-        print(f"  Permission 1: {perm1_dict}")
+        # Handle Root objects - use attributes, not dict keys
+        request_id_1 = perm1.request_id if hasattr(perm1, 'request_id') else perm1['request_id']
+        print(f"  Permission 1: {perm1}")
 
-        await client.call_tool("approve_worker_permission", {
-            "worker_id": worker_id,
-            "request_id": perm1_dict['request_id'],
+        await client.call_tool("approve_permission", {
+            "request_id": request_id_1,
             "allow": True
         })
         print("✓ First permission approved")
 
         # Wait for second permission request or completion
         print(f"\n[4/6] Waiting for second permission request or completion...")
-        wait_result2 = await client.call_tool("wait", {
-            "timeout": 15.0,
-            "worker_id": worker_id
-        })
-        worker_state2 = wait_result2.structured_content
-        pending_perms2 = worker_state2["pending_permissions"]
+        wait_result2 = await client.call_tool("wait", {})
+        worker_state2 = wait_result2.data
+        pending_perms2 = worker_state2.pending_permissions if hasattr(worker_state2, 'pending_permissions') else worker_state2.get("pending_permissions", [])
 
         if not pending_perms2:
             print("⚠ No second permission request - worker may have completed")
             # Check if worker completed
-            if worker_state2["completed"]:
+            completed2 = worker_state2.completed if hasattr(worker_state2, 'completed') else worker_state2.get("completed", [])
+            if completed2:
                 print("✓ Worker completed without second permission")
         else:
             # Approve second permission
             print(f"\n[5/6] Approving second permission...")
             perm2 = pending_perms2[0]
-            if hasattr(perm2, 'model_dump'):
-                perm2_dict = perm2.model_dump()
-            elif hasattr(perm2, 'dict'):
-                perm2_dict = perm2.dict()
-            else:
-                perm2_dict = perm2
 
-            print(f"  Permission 2: {perm2_dict}")
+            # Handle Root objects
+            request_id_2 = perm2.request_id if hasattr(perm2, 'request_id') else perm2['request_id']
+            tool_2 = perm2.tool if hasattr(perm2, 'tool') else perm2['tool']
+
+            print(f"  Permission 2: {perm2}")
 
             # Compare the two permissions
             print(f"\n  Comparing permissions:")
-            print(f"    request_id: {perm1_dict['request_id']} vs {perm2_dict['request_id']}")
-            print(f"    tool: {perm1_dict['tool']} vs {perm2_dict['tool']}")
-            print(f"    input match: {perm1_dict['input'] == perm2_dict['input']}")
-            if perm1_dict['input'] != perm2_dict['input']:
-                print(f"    input1: {perm1_dict['input']}")
-                print(f"    input2: {perm2_dict['input']}")
+            print(f"    request_id: {request_id_1} vs {request_id_2}")
+            print(f"    tool: {perm1.tool if hasattr(perm1, 'tool') else perm1['tool']} vs {tool_2}")
 
-            await client.call_tool("approve_worker_permission", {
-                "worker_id": worker_id,
-                "request_id": perm2_dict['request_id'],
+            await client.call_tool("approve_permission", {
+                "request_id": request_id_2,
                 "allow": True
             })
             print("✓ Second permission approved")
 
         # Check if worker already completed, otherwise wait for completion
         print("\n[6/6] Waiting for worker to complete...")
-        if worker_state2["completed"]:
+        completed_list = worker_state2.completed if hasattr(worker_state2, 'completed') else worker_state2.get("completed", [])
+        if completed_list:
             # Worker already completed in previous wait
-            results = worker_state2["completed"]
+            results = completed_list
             print(f"✓ Worker completed: {len(results)} result(s) returned (from previous wait)")
         else:
             # Wait for completion
             try:
-                wait_result = await client.call_tool("wait", {
-                    "timeout": 15.0,
-                    "worker_id": worker_id
-                })
-                worker_state = wait_result.structured_content
-                results = worker_state["completed"]
+                wait_result = await client.call_tool("wait", {})
+                worker_state = wait_result.data
+                results = worker_state.completed if hasattr(worker_state, 'completed') else worker_state.get("completed", [])
                 print(f"✓ Worker completed: {len(results)} result(s) returned")
 
             except Exception as e:
@@ -159,11 +136,12 @@ async def test_worker_needs_bash_permission():
             pytest.fail("No results returned - worker never completed")
 
         worker_result = results[0]
-        print(f"\n✓ Worker ID: {worker_result['worker_id']}")
+        worker_id_result = worker_result.worker_id if hasattr(worker_result, 'worker_id') else worker_result['worker_id']
+        print(f"\n✓ Worker ID: {worker_id_result}")
 
         try:
             # Read output from file
-            output_file = worker_result['output_file']
+            output_file = worker_result.conversation_history_file_path if hasattr(worker_result, 'conversation_history_file_path') else worker_result.get('conversation_history_file_path', worker_result.get('output_file'))
             with open(output_file, 'r') as f:
                 stdout_data = json.load(f)
 

@@ -1,5 +1,5 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from asyncio import Event, Task
 import socket
 from enum import Enum
@@ -8,6 +8,14 @@ from typing import Optional, Literal, List, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .unix_socket_manager import UnixSocketManager
+
+
+class AgentType(str, Enum):
+    """Predefined agent types matching Claude Code's Task tool."""
+    GENERAL_PURPOSE = "general-purpose"
+    EXPLORE = "Explore"
+    STATUSLINE_SETUP = "statusline-setup"
+    OUTPUT_STYLE_SETUP = "output-style-setup"
 
 @dataclass
 class ClaudeJobResult:
@@ -22,7 +30,6 @@ class ClaudeJobResult:
 class ActiveTask:
     worker_id: str
     task: Task[ClaudeJobResult]
-    timeout: float
     permission_socket: Optional[socket.socket] = None
 
 
@@ -30,17 +37,15 @@ class CompleteTask(BaseModel):
     """Completed worker task with output."""
     worker_id: str
     claude_session_id: str
-    output_file: str  # Absolute path to logs/worker-{id}.json
-    timeout: float
+    conversation_history_file_path: str  # Absolute path to logs/worker-{id}.json
 
 
 class FailedTask(BaseModel):
     """Failed worker task with error details."""
     worker_id: str
     returncode: int
-    output_file: Optional[str]  # Path to partial output if exists
+    conversation_history_file_path: Optional[str]  # Path to partial output if exists
     error_hint: str  # Brief actionable hint (max 150 chars)
-    timeout: float
 
 
 class WorkerStatus(Enum):
@@ -55,10 +60,10 @@ class Worker:
     """Unified worker registry entry with explicit state management."""
     worker_id: str
     status: WorkerStatus
-    timeout: float
     task: Optional[Task[ClaudeJobResult]] = None
     complete_task: Optional[CompleteTask] = None
     socket_mgr: Optional['UnixSocketManager'] = None  # Forward reference
+    agent_type: Optional[AgentType] = None
 
 
 class PermissionRequest(BaseModel):
@@ -141,3 +146,48 @@ class PermissionResponseMessage(BaseModel):
     updatedInput: Optional[dict] = None  # Present when allow=True (camelCase for Claude)
     message: Optional[str] = None  # Present when allow=False
 
+
+# Discriminated union return types for wait_for_worker
+
+class WorkerCompleted(BaseModel):
+    """Worker completed successfully."""
+    status: Literal["completed"] = "completed"
+    worker_id: str
+    conversation_history_file_path: str
+    session_id: str
+
+
+class WorkerFailed(BaseModel):
+    """Worker failed with error."""
+    status: Literal["failed"] = "failed"
+    worker_id: str
+    error_hint: str
+    conversation_history_file_path: Optional[str] = None
+
+
+class PermissionNeeded(BaseModel):
+    """Worker needs permission approval."""
+    status: Literal["permission_needed"] = "permission_needed"
+    worker_id: str
+    request_id: str
+    tool: str
+    input: dict
+
+
+class WaitTimedOut(BaseModel):
+    """Wait timed out without events."""
+    status: Literal["timed_out"] = "timed_out"
+    message: str = "No worker events occurred within timeout"
+
+
+# Discriminated union type for wait_for_worker return
+WorkerResult = Union[WorkerCompleted, WorkerFailed, PermissionNeeded, WaitTimedOut]
+
+
+class WorkerOptions(BaseModel):
+    model: Optional[str] = "claude-sonnet-4-5"
+    temperature: Optional[float] = 1.0
+    max_tokens: Optional[int]
+    thinking: Optional[bool] = False
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
