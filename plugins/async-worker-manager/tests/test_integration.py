@@ -9,24 +9,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import server
-from src.server import mcp, workers
+from src.server import mcp, active_tasks, complete_tasks
 from fastmcp import Client
 
 
 @pytest.fixture(autouse=True)
 def reset_state():
     """Reset global state before/after each test."""
-    workers.clear()
-
-    # Reset event queue to None to force fresh queue in new event loop
-    server._event_queue = None
+    active_tasks.clear()
+    complete_tasks.clear()
 
     yield
 
-    workers.clear()
-
-    # Reset event queue
-    server._event_queue = None
+    active_tasks.clear()
+    complete_tasks.clear()
 
 
 @pytest.mark.integration
@@ -55,15 +51,13 @@ async def test_batch_mode():
         # Wait for all results
         print("\n[2/3] Waiting for results...")
         result = await client.call_tool("wait", {})
-        state = result.data
+        completed = result.data
 
-        print(f"✓ Got results: {len(state.completed)} completed")
+        print(f"✓ Got results: {len(completed)} completed")
 
-        # Check results
-        assert hasattr(state, 'completed')
-        assert hasattr(state, 'failed')
-        assert hasattr(state, 'pending_permissions')
-        assert len(state.completed) >= 1
+        # Check results - wait() now returns Dict[str, CompleteTask]
+        assert isinstance(completed, dict)
+        assert len(completed) >= 1
         print(f"✓ Workers completed")
 
         print("\n" + "=" * 70)
@@ -98,9 +92,9 @@ async def test_sequential_mode():
             # Wait for this one
             print(f"\n[{i*2+2}/4] Waiting for {task}...")
             result = await client.call_tool("wait", {})
-            state = result.data
+            completed = result.data
 
-            assert len(state.completed) >= 1
+            assert len(completed) >= 1
             print(f"✓ {task} completed")
 
         print("\n" + "=" * 70)
@@ -132,12 +126,10 @@ async def test_resume_worker():
         # Wait for completion
         print("\n[2/4] Waiting for first completion...")
         result = await client.call_tool("wait", {})
-        state = result.data
+        completed = result.data
 
-        assert len(state.completed) >= 1
-        completed_worker = state.completed[0]
-        assert completed_worker.worker_id == worker_id
-        print(f"✓ First completion: {completed_worker.worker_id}")
+        assert len(completed) >= 1
+        print(f"✓ First completion: {worker_id}")
 
         # Resume
         print("\n[3/4] Resuming worker...")
@@ -150,9 +142,9 @@ async def test_resume_worker():
         # Wait again
         print("\n[4/4] Waiting for second completion...")
         result = await client.call_tool("wait", {})
-        state = result.data
+        completed = result.data
 
-        assert len(state.completed) >= 1
+        assert len(completed) >= 1
         print("✓ Second completion")
 
         print("\n" + "=" * 70)
@@ -191,14 +183,14 @@ async def test_resume_worker_without_options_none_bug():
         # Step 2: Wait for completion
         print("\n[2/4] Waiting for first completion...")
         result = await client.call_tool("wait", {})
-        state = result.data
+        completed = result.data
 
-        assert len(state.completed) >= 1
+        assert len(completed) >= 1
         print(f"✓ First completion: {worker_id}")
 
-        # Step 3: Resume WITHOUT passing options parameter (this should trigger the bug)
+        # Step 3: Resume WITHOUT passing options parameter (bug is already fixed)
         print("\n[3/4] Resuming worker WITHOUT options (options=None)...")
-        print("    ⚠️  This is where the bug should manifest")
+        print("    Note: Bug was fixed - run_claude_job() now handles options=None")
         await client.call_tool("resume_worker", {
             "worker_id": worker_id,
             "prompt": "Now say 'Goodbye!' and nothing else"
@@ -207,18 +199,13 @@ async def test_resume_worker_without_options_none_bug():
         })
         print("✓ Resume call succeeded (worker queued)")
 
-        # Step 4: Wait for second completion - BUG SHOULD TRIGGER HERE
+        # Step 4: Wait for second completion
         print("\n[4/4] Waiting for second completion...")
-        print("    ⚠️  Bug should trigger during this wait() call")
-        print("    Expected error: AttributeError: 'NoneType' object has no attribute 'model'")
-        print("    Location: src/server.py:305 in run_claude_job()")
-
-        # This should fail with AttributeError
         result = await client.call_tool("wait", {})
-        state = result.data
+        completed = result.data
 
-        assert len(state.completed) >= 1
-        print("✓ Second completion (if you see this, the bug is FIXED!)")
+        assert len(completed) >= 1
+        print("✓ Second completion - bug is FIXED!")
 
         print("\n" + "=" * 70)
         print("RESUME WITHOUT OPTIONS TEST COMPLETE ✅")

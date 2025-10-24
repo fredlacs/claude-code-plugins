@@ -1,11 +1,10 @@
 ---
 name: integration-test
-description: Run integration tests for the async-worker-manager MCP server. Validates all 4 core tools (spawn_worker, wait, resume_worker, approve_permission), racing pattern, error handling, permissions, and session resumption. Use when the user asks to "test the async-worker-manager MCP", "run integration tests", "verify async workers", or mentions "testing MCP server".
+description: Run integration tests for the async-worker-manager MCP server. Validates all 3 core tools (spawn_worker, wait, resume_worker), racing pattern, error handling, and session resumption. Use when the user asks to "test the async-worker-manager MCP", "run integration tests", "verify async workers", or mentions "testing MCP server".
 allowed-tools:
   - mcp__async_worker_manager__spawn_worker
   - mcp__async_worker_manager__wait
   - mcp__async_worker_manager__resume_worker
-  - mcp__async_worker_manager__approve_permission
   - Read
   - AskUserQuestion
 ---
@@ -62,16 +61,12 @@ wait()
 ```
 
 **Expected Outcome:**
-- Returns WorkerState with:
-  - completed: list with CompleteTask object(s)
-  - failed: empty list
-  - pending_permissions: empty list
-- Completes successfully
-- worker_id matches the one from Test 1
+- Returns Dict[worker_id, CompleteTask]
+- Dict contains the worker_id from Test 1 as a key
+- CompleteTask contains conversation_history_file_path
 
 **Validation:**
-- Response contains completed list with worker_id
-- Response includes claude_session_id
+- Response is a dict with worker_id as key
 - Response includes conversation_history_file_path
 - File path exists and points to logs/worker-{id}.json
 
@@ -88,14 +83,15 @@ Read(file_path: "<conversation_history_file_path_from_test_2>")
 **Expected Outcome:**
 - File exists and is readable
 - Contains JSON with:
-  - session_id (session-XXXXX format)
-  - output (the actual response text)
+  - session_id (UUID format)
+  - result (the actual response text)
+  - type, duration_ms, num_turns, etc.
 
 **Validation:**
 - JSON parses correctly
-- session_id matches claude_session_id from Test 2
-- output contains "hello" (case-insensitive)
-- output contains 3 programming languages
+- session_id field is present
+- result contains "hello" (case-insensitive)
+- result contains 3 programming languages
 
 ---
 
@@ -122,14 +118,14 @@ Read(file_path: "<conversation_history_file_path>")
 
 **Expected Outcome:**
 - `resume_worker` succeeds without error
-- Second `wait` returns the same worker_id in completed list
-- Conversation history file shows response about the first language
+- Second `wait` returns the same worker_id in dict
+- Conversation history file shows updated response about the first language
 - Same session_id maintained across resume
 
 **Validation:**
-- worker transitions from completed → active → completed
-- session_id remains consistent
-- Output contains relevant information about the programming language
+- Worker transitions from completed → active → completed
+- session_id remains consistent in file
+- result field contains relevant information about the programming language
 
 ---
 
@@ -149,13 +145,13 @@ result = wait()
 
 **Expected Outcome:**
 - All 3 workers created successfully
-- `wait` returns WorkerState with all 3 workers in completed list
+- `wait` returns dict with all 3 worker_ids as keys
 - Each worker has unique worker_id
 - Each has conversation_history_file_path
 
 **Validation:**
 - 3 unique worker_ids generated
-- wait returns all 3 completions
+- wait returns dict with all 3 workers
 - All conversation history files accessible
 - Batch mode works correctly
 
@@ -181,7 +177,7 @@ wait()
 
 **Validation:**
 - Worker spawns without error
-- wait returns completion
+- wait returns dict with worker completion
 - Conversation history shows agent followed the Explore pattern
 
 ---
@@ -210,13 +206,13 @@ wait()
 
 **Validation:**
 - Worker spawns without error
-- wait returns completion
+- wait returns dict with worker completion
 - Model setting is respected
 
 ---
 
 ### Test 8: Permission Handling
-**Objective:** Verify permission request and approval flow.
+**Objective:** Verify that permissions are auto-approved correctly.
 
 **Command:**
 ```
@@ -226,46 +222,28 @@ worker_id = spawn_worker(
   prompt: "Create a test file named /tmp/test-async-worker.txt with content 'hello'"
 )
 
-# Wait will return pending_permissions
+# Wait for completion (permissions auto-approved)
 result = wait()
 ```
 
 **Expected Outcome:**
-- `wait` returns WorkerState with:
-  - pending_permissions: list with PermissionRequest
-  - completed: empty (worker blocked)
-  - failed: empty
-
-**Then:**
-```
-approve_permission(
-  request_id: result.pending_permissions[0].request_id,
-  allow: true
-)
-
-# Wait again for completion
-final_result = wait()
-```
-
-**Expected Outcome:**
-- Permission approved successfully
-- Second wait returns worker in completed list
-- File was created
+- `wait` returns dict with worker_id as key
+- Worker completes successfully
+- File was created at /tmp/test-async-worker.txt
 
 **Validation:**
-- Permission request structure is correct
-- approve_permission unblocks worker
-- Worker completes successfully after approval
-- Requested action executed
+- Worker completes without manual permission approval
+- File operations succeed (verify file exists with correct content)
+- No permission prompts or blocking
 
 ---
 
 ### Test 9: Failed Workers
-**Objective:** Verify that failed workers are reported correctly.
+**Objective:** Verify that workers handle errors gracefully.
 
 **Command:**
 ```
-# Create worker with invalid command
+# Create worker with challenging request
 spawn_worker(
   description: "Invalid tool",
   prompt: "Use the tool 'nonexistent_tool' to do something"
@@ -274,16 +252,14 @@ result = wait()
 ```
 
 **Expected Outcome:**
-- `wait` returns WorkerState with:
-  - failed: list with FailedTask
-  - error_hint: brief actionable message
-  - conversation_history_file_path: may contain partial output
+- Worker completes with helpful explanation that the tool doesn't exist
+- `wait` returns dict with worker completion
+- Conversation history contains the worker's response
 
 **Validation:**
-- Failed worker reported in failed list
-- error_hint is descriptive
-- returncode is non-zero
-- Server doesn't crash
+- Worker handles invalid requests gracefully
+- No server crashes
+- Worker provides helpful response explaining available tools
 
 ---
 
@@ -294,7 +270,7 @@ result = wait()
 ```
 resume_worker(worker_id: "00000000-0000-0000-0000-000000000000", prompt: "Hello")
 ```
-**Expected:** ToolError with message like "Worker ... not found"
+**Expected:** Error with message "Worker ... not found. maybe still working"
 
 **Test 10b: Resume Active Worker**
 ```
@@ -304,34 +280,32 @@ worker_id = spawn_worker(description: "Slow task", prompt: "Count to 100")
 # Immediately try to resume (before it completes)
 resume_worker(worker_id: worker_id, prompt: "Stop")
 ```
-**Expected:** ToolError with message like "Worker ... is not in completed state"
+**Expected:** Error with message "Worker ... not found. maybe still working"
 
 **Test 10c: Wait with No Active Workers**
 ```
 # After all workers complete
 wait()
 ```
-**Expected:** ToolError with message like "No active workers to wait for"
+**Expected:** Error with message "No active workers to wait for"
 
 **Validation:**
 - Error messages are clear and actionable
 - Errors don't crash the server
-- Proper ToolError exceptions raised
 
 ---
 
-### Test 11: Skill-Guided Permission Flow
-**Objective:** Verify that the async-workers skill (from the plugin) guides agents to properly handle permission requests through user interaction.
+### Test 11: Skill-Guided Batch Workflow
+**Objective:** Verify that the async-workers skill guides agents to properly create multiple workers in parallel.
 
 **Setup:**
-This test must be run by invoking the async-workers skill directly from the plugin:
+This test is run by invoking the async-workers skill directly from the plugin:
 ```
-User: "Use the async-worker-manager:async-workers skill to create 3 test files in parallel"
+Skill("async-worker-manager:async-workers")
 ```
 
-**Expected Agent Actions (guided by the async-workers skill):**
+Then spawn 3 workers for parallel execution:
 ```
-# After skill loads, spawn 3 workers that will request permissions
 mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
   description: "Create test file 1",
   prompt: "Create a file at /tmp/async-test-1.txt containing the text 'Worker 1 completed'"
@@ -345,33 +319,22 @@ mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
   prompt: "Create a file at /tmp/async-test-3.txt containing the text 'Worker 3 completed'"
 )
 
-# Wait for workers
+# Wait for all workers to complete
 result = mcp__plugin_async-worker-manager_agent-manager__wait()
-
-# Skill should guide agent to use AskUserQuestion for permissions
-# Then approve_permission based on user responses
 ```
 
 **Expected Behavior:**
 - async-workers skill loads from plugin successfully
-- 3 workers spawn
-- `wait()` returns pending_permissions (workers blocked)
-- Agent uses AskUserQuestion tool to surface permissions to user (guided by skill instructions)
-- Agent waits for user responses before calling approve_permission
+- 3 workers spawn in parallel
+- `wait()` returns dict with all 3 workers completed
+- All 3 files created successfully
 
 **Validation:**
-- ✅ Skill instructs agent to handle permissions interactively
-- ✅ Agent calls AskUserQuestion (not approve_permission directly)
-- ✅ Agent presents permission details to user
-- ✅ Agent parses user answers correctly
-- ✅ Agent calls approve_permission based on user input
-
-**Success Criteria:**
-- Agent behavior is guided by async-workers skill instructions, not by explicit prompting
-- AskUserQuestion is used for each permission request
-- Permission approval happens only after user confirmation
-
-**Note:** This test validates that the skill's permission handling pattern is effective at guiding agent behavior without explicit prompting. The test is "sneaky" - the user request doesn't mention permissions or how to handle them, but the skill should guide the agent to use the proper flow.
+- ✅ Skill loads and provides correct guidance
+- ✅ 3 workers spawn successfully
+- ✅ All workers complete (permissions auto-approved)
+- ✅ All 3 test files exist with correct content
+- ✅ Batch mode works correctly
 
 ---
 
@@ -393,10 +356,10 @@ result = mcp__plugin_async-worker-manager_agent-manager__wait()
 ✅ Batch mode returns all completions
 ✅ Agent types work correctly
 ✅ Worker options are applied
-✅ Permission flow works end-to-end
-✅ Failed workers are reported with helpful hints
+✅ Permission auto-approval works correctly
+✅ Workers handle errors gracefully
 ✅ Error messages are clear and helpful
-✅ Skill guides agents to handle permissions interactively
+✅ Skill guides agents for batch workflows
 ✅ No server crashes or hangs
 
 ## Supporting Files
@@ -416,17 +379,12 @@ For detailed command syntax and expected response formats, see:
 
 2. **wait** - Wait for all active workers
    - No parameters
-   - Returns: WorkerState with completed, failed, pending_permissions
+   - Returns: Dict[worker_id, {conversation_history_file_path: path}]
 
 3. **resume_worker** - Resume completed worker
    - worker_id: string (required)
    - prompt: string (required)
    - options: dict (optional)
-
-4. **approve_permission** - Approve/deny permission request
-   - request_id: string (required)
-   - allow: bool (required)
-   - reason: string (optional)
 
 ## Troubleshooting
 
@@ -437,12 +395,11 @@ For detailed command syntax and expected response formats, see:
 
 **Session ID Issues:**
 - Ensure stdout parsing works with `--output-format json`
-- Verify session_id format is "session-XXXXX"
+- Verify session_id is in conversation history file
 
 **Permission Issues:**
-- Check pending_permissions in wait result
-- Call approve_permission before waiting again
-- Permissions must be approved for worker to proceed
+- Permissions are auto-approved for /tmp and home directory
+- Workers should complete without manual approval
 
 **File Not Found:**
 - conversation_history_file_path is absolute path
@@ -451,9 +408,16 @@ For detailed command syntax and expected response formats, see:
 
 ## Version History
 
+- **v0.3.0** (2025-10-24) - Updated for auto-approval and simplified API
+  - Removed approve_permission tool (permissions now auto-approved)
+  - Updated Test 8 to reflect auto-approval behavior
+  - Updated Test 9 for graceful error handling
+  - Updated all expected outcomes to dict-based return format
+  - Removed outdated schema references (WorkerState, CompleteTask with extra fields)
+  - Updated Test 11 for batch workflow validation
 - **v0.2.0** (2025-10-23) - Updated for current API
-  - 10 comprehensive test scenarios
-  - Tests all 4 core MCP tools
+  - 11 comprehensive test scenarios
+  - Tests all core MCP tools
   - Added permission handling tests
   - Added agent type and options tests
   - Added failed worker tests
@@ -461,6 +425,5 @@ For detailed command syntax and expected response formats, see:
   - Renamed tools (spawn_worker, resume_worker, wait)
 - **v0.1.0** (2025-10-22) - Initial integration test skill
   - 6 comprehensive test scenarios
-  - Tests all 4 core MCP tools (old API)
   - Validates racing pattern and error handling
   - Session resumption verification

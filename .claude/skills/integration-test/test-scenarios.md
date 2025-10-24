@@ -13,7 +13,7 @@ Complete reference for manually executing integration tests against the async-wo
 | 5. Parallel Workers | `spawn_worker`, `wait` | ~45s | None |
 | 6. Agent Types | `spawn_worker`, `wait` | ~30s | None |
 | 7. Worker Options | `spawn_worker`, `wait` | ~30s | None |
-| 8. Permission Handling | `spawn_worker`, `wait`, `approve_permission` | ~45s | None |
+| 8. Permission Handling | `spawn_worker`, `wait` | ~45s | None |
 | 9. Failed Workers | `spawn_worker`, `wait` | ~30s | None |
 | 10. Error Handling | `resume_worker`, `wait` | <5s | None |
 
@@ -63,30 +63,23 @@ Complete reference for manually executing integration tests against the async-wo
 ### Expected Response
 ```json
 {
-  "completed": [
-    {
-      "worker_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "claude_session_id": "session-20251022123456-abc123",
-      "conversation_history_file_path": "/absolute/path/to/logs/worker-a1b2c3d4-e5f6-7890-abcd-ef1234567890.json"
-    }
-  ],
-  "failed": [],
-  "pending_permissions": []
+  "a1b2c3d4-e5f6-7890-abcd-ef1234567890": {
+    "conversation_history_file_path": "/absolute/path/to/logs/worker-a1b2c3d4-e5f6-7890-abcd-ef1234567890.json"
+  }
 }
 ```
 
 ### Validation Checklist
-- [ ] Response is a WorkerState object
-- [ ] `completed` list contains CompleteTask for worker from Test 1
-- [ ] `worker_id` matches the one from Test 1
-- [ ] `claude_session_id` starts with "session-"
+- [ ] Response is a dict with worker_id as key
+- [ ] Dict contains key with worker_id from Test 1
+- [ ] Each value has `conversation_history_file_path`
 - [ ] `conversation_history_file_path` is an absolute path
-- [ ] `failed` and `pending_permissions` are empty lists
+- [ ] File path points to logs/worker-{id}.json
 
 ### Common Issues
 - **"No active workers to wait for"** - Create a worker first with Test 1
 - **Worker still active** - Worker may be taking longer than expected
-- **Empty completed list** - No workers have completed yet; wait is blocking until they do
+- **Empty dict** - No workers have completed yet; wait is blocking until they do
 
 ---
 
@@ -105,19 +98,23 @@ Complete reference for manually executing integration tests against the async-wo
 ### Expected Response
 ```json
 {
-  "session_id": "session-20251022123456-abc123",
-  "output": "Hello! Here are 3 programming languages:\n1. Python\n2. JavaScript\n3. Rust"
+  "type": "result",
+  "subtype": "success",
+  "session_id": "879dfa34-3253-4158-bf19-5eb6c6b89e3b",
+  "result": "Hello! Here are exactly 3 programming languages:\n\n1. Python\n2. JavaScript\n3. Rust",
+  "duration_ms": 2000,
+  "num_turns": 1,
+  "total_cost_usd": 0.007871
 }
 ```
 
 ### Validation Checklist
 - [ ] File exists and is readable
 - [ ] JSON parses correctly
-- [ ] `session_id` field present and matches claude_session_id from Test 2
-- [ ] `session_id` format is correct (session-TIMESTAMP-HASH)
-- [ ] `output` field contains the response
-- [ ] `output` contains greeting (e.g., "hello", "Hi")
-- [ ] `output` lists 3 programming languages
+- [ ] `session_id` field present in file (UUID format)
+- [ ] `result` field contains the response
+- [ ] `result` contains greeting (e.g., "hello", "Hi")
+- [ ] `result` lists 3 programming languages
 
 ### Content Validation
 Parse the file contents and verify:
@@ -126,9 +123,8 @@ import json
 with open(file_path) as f:
     data = json.load(f)
 assert "session_id" in data
-assert data["session_id"].startswith("session-")
-assert "output" in data
-assert "hello" in data["output"].lower() or "hi" in data["output"].lower()
+assert "result" in data
+assert "hello" in data["result"].lower() or "hi" in data["result"].lower()
 ```
 
 ### Common Issues
@@ -172,15 +168,9 @@ null
 **Expected Response:**
 ```json
 {
-  "completed": [
-    {
-      "worker_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "claude_session_id": "session-20251022123456-abc123",
-      "conversation_history_file_path": "/absolute/path/to/logs/worker-a1b2c3d4-e5f6-7890-abcd-ef1234567890.json"
-    }
-  ],
-  "failed": [],
-  "pending_permissions": []
+  "a1b2c3d4-e5f6-7890-abcd-ef1234567890": {
+    "conversation_history_file_path": "/absolute/path/to/logs/worker-a1b2c3d4-e5f6-7890-abcd-ef1234567890.json"
+  }
 }
 ```
 
@@ -199,8 +189,9 @@ null
 **Expected Response:**
 ```json
 {
-  "session_id": "session-20251022123456-abc123",
-  "output": "...response about the first language (Python)..."
+  "session_id": "879dfa34-3253-4158-bf19-5eb6c6b89e3b",
+  "result": "Python is a high-level, interpreted programming language known for its clear and readable syntax...",
+  "num_turns": 3
 }
 ```
 
@@ -208,8 +199,9 @@ null
 - [ ] `resume_worker` succeeds without error
 - [ ] Worker transitions: completed → active (after resume) → completed (after wait)
 - [ ] `session_id` remains the same across resume
-- [ ] New `output` contains response about the programming language
+- [ ] New `result` contains response about the programming language
 - [ ] File contents updated with new conversation
+- [ ] `num_turns` increased from previous value
 
 ### Session Continuity Verification
 ```python
@@ -279,32 +271,21 @@ Response: `"worker-3-uuid"`
 **Expected Response:**
 ```json
 {
-  "completed": [
-    {
-      "worker_id": "worker-1-uuid",
-      "claude_session_id": "session-...",
-      "conversation_history_file_path": "/path/to/logs/worker-1-uuid.json"
-    },
-    {
-      "worker_id": "worker-2-uuid",
-      "claude_session_id": "session-...",
-      "conversation_history_file_path": "/path/to/logs/worker-2-uuid.json"
-    },
-    {
-      "worker_id": "worker-3-uuid",
-      "claude_session_id": "session-...",
-      "conversation_history_file_path": "/path/to/logs/worker-3-uuid.json"
-    }
-  ],
-  "failed": [],
-  "pending_permissions": []
+  "worker-1-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-1-uuid.json"
+  },
+  "worker-2-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-2-uuid.json"
+  },
+  "worker-3-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-3-uuid.json"
+  }
 }
 ```
 
 ### Validation Checklist
 - [ ] 3 workers created with unique IDs
-- [ ] `wait` returns WorkerState with all 3 workers in completed list
-- [ ] All workers have unique worker_ids
+- [ ] `wait` returns dict with all 3 worker IDs as keys
 - [ ] All workers have conversation_history_file_path
 - [ ] All conversation history files exist and are accessible
 
@@ -312,12 +293,12 @@ Response: `"worker-3-uuid"`
 ```python
 # Verify all 3 workers completed
 worker_ids = [worker1_id, worker2_id, worker3_id]
-completed_ids = [w["worker_id"] for w in result["completed"]]
+completed_ids = list(result.keys())
 assert set(completed_ids) == set(worker_ids)
 
 # Verify all files exist
-for worker in result["completed"]:
-    assert os.path.exists(worker["conversation_history_file_path"])
+for worker_id, task_data in result.items():
+    assert os.path.exists(task_data["conversation_history_file_path"])
 ```
 
 ### Common Issues
@@ -352,21 +333,15 @@ Then:
 ### Expected Response
 ```json
 {
-  "completed": [
-    {
-      "worker_id": "...",
-      "claude_session_id": "session-...",
-      "conversation_history_file_path": "/path/to/logs/worker-....json"
-    }
-  ],
-  "failed": [],
-  "pending_permissions": []
+  "worker-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-uuid.json"
+  }
 }
 ```
 
 ### Validation Checklist
 - [ ] Worker spawns without error
-- [ ] wait returns completion
+- [ ] wait returns dict with worker completion
 - [ ] Conversation history shows agent used Explore behavior
 - [ ] No errors related to agent_type
 
@@ -410,21 +385,15 @@ Then:
 ### Expected Response
 ```json
 {
-  "completed": [
-    {
-      "worker_id": "...",
-      "claude_session_id": "session-...",
-      "conversation_history_file_path": "/path/to/logs/worker-....json"
-    }
-  ],
-  "failed": [],
-  "pending_permissions": []
+  "worker-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-uuid.json"
+  }
 }
 ```
 
 ### Validation Checklist
 - [ ] Worker spawns without error
-- [ ] wait returns completion
+- [ ] wait returns dict with worker completion
 - [ ] Settings applied (check conversation for thinking blocks if thinking=true)
 - [ ] No errors related to options
 
@@ -449,9 +418,11 @@ Then:
 
 ## Test 8: Permission Handling
 
-### Part 8a: Create Worker Needing Permission
+**Note:** Permissions are now auto-approved as of v0.3.0.
 
-**Command Syntax:**
+### Command Syntax
+
+**Create Worker:**
 ```json
 {
   "tool": "mcp__async_worker_manager__spawn_worker",
@@ -462,9 +433,7 @@ Then:
 }
 ```
 
-### Part 8b: Wait (Returns Pending Permission)
-
-**Command Syntax:**
+**Wait for Completion:**
 ```json
 {
   "tool": "mcp__async_worker_manager__wait",
@@ -475,90 +444,28 @@ Then:
 **Expected Response:**
 ```json
 {
-  "completed": [],
-  "failed": [],
-  "pending_permissions": [
-    {
-      "request_id": "req-abc123",
-      "worker_id": "worker-uuid",
-      "tool": "Write",
-      "input": {
-        "file_path": "/tmp/test-async-worker.txt",
-        "content": "hello"
-      }
-    }
-  ]
-}
-```
-
-### Part 8c: Approve Permission
-
-**Command Syntax:**
-```json
-{
-  "tool": "mcp__async_worker_manager__approve_permission",
-  "arguments": {
-    "request_id": "req-abc123",
-    "allow": true
+  "worker-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-uuid.json"
   }
-}
-```
-
-**Expected Response:**
-```json
-{
-  "status": "approved",
-  "tool": "Write",
-  "input": {...}
-}
-```
-
-### Part 8d: Wait Again (Gets Completion)
-
-**Command Syntax:**
-```json
-{
-  "tool": "mcp__async_worker_manager__wait",
-  "arguments": {}
-}
-```
-
-**Expected Response:**
-```json
-{
-  "completed": [
-    {
-      "worker_id": "worker-uuid",
-      "claude_session_id": "session-...",
-      "conversation_history_file_path": "/path/to/logs/worker-uuid.json"
-    }
-  ],
-  "failed": [],
-  "pending_permissions": []
 }
 ```
 
 ### Validation Checklist
 - [ ] Worker spawns successfully
-- [ ] First wait returns pending_permissions list
-- [ ] PermissionRequest structure is correct (request_id, worker_id, tool, input)
-- [ ] approve_permission succeeds
-- [ ] Second wait returns worker in completed list
+- [ ] wait returns dict with worker completion
 - [ ] File was created (/tmp/test-async-worker.txt)
-
-### Permission Flow
-1. Worker requests permission → wait() returns with pending_permissions
-2. Approve/deny → approve_permission()
-3. Worker continues → wait() again for completion
+- [ ] File contains "hello"
+- [ ] No permission prompts or manual approval needed
 
 ### Common Issues
-- **Permission not in list** - Worker may not have requested permission yet
-- **"Request not found"** - Request_id may have expired or worker completed
-- **Worker in failed list** - Permission was denied or worker errored
+- **File not created** - Check worker completed successfully
+- **Permission denied** - Verify path is in auto-approved locations (/tmp, home directory)
 
 ---
 
 ## Test 9: Failed Workers
+
+**Note:** As of v0.3.0, workers handle errors gracefully and explain issues to the user.
 
 ### Command Syntax
 ```json
@@ -582,39 +489,25 @@ Then:
 ### Expected Response
 ```json
 {
-  "completed": [],
-  "failed": [
-    {
-      "worker_id": "worker-uuid",
-      "returncode": 1,
-      "conversation_history_file_path": "/path/to/logs/worker-uuid.json",
-      "error_hint": "Tool not found. Check MCP server config."
-    }
-  ],
-  "pending_permissions": []
+  "worker-uuid": {
+    "conversation_history_file_path": "/path/to/logs/worker-uuid.json"
+  }
 }
 ```
 
+The worker completes successfully with a helpful explanation about why the tool doesn't exist.
+
 ### Validation Checklist
 - [ ] Worker spawns successfully
-- [ ] wait returns WorkerState with worker in failed list
-- [ ] FailedTask has worker_id, returncode, error_hint
-- [ ] returncode is non-zero
-- [ ] error_hint is descriptive and actionable
-- [ ] conversation_history_file_path may be present (partial output)
+- [ ] wait() returns dict with worker completion
+- [ ] Conversation history contains helpful explanation
+- [ ] Worker explains available tools as alternative
 - [ ] Server doesn't crash
-
-### Error Hint Examples
-- "Timed out. Increase timeout parameter."
-- "Permission denied. Check pending_permissions and approve."
-- "Tool not found. Check MCP server config."
-- "Connection failed. Check MCP server is running."
-- First 150 chars of stderr
+- [ ] No exceptions raised
 
 ### Common Issues
-- **Worker in completed instead** - Worker may have succeeded despite intent
-- **No error_hint** - Check implementation generates hints
-- **Server crash** - Failed workers should be handled gracefully
+- **Worker crashes** - Workers should handle invalid requests gracefully
+- **Server crash** - Check error handling in worker implementation
 
 ---
 
@@ -634,11 +527,8 @@ Then:
 ```
 
 **Expected Response:**
-```json
-{
-  "error": "Worker 00000000-0000-0000-0000-000000000000 not found",
-  "type": "ToolError"
-}
+```
+Error: Worker 00000000-0000-0000-0000-000000000000 not found. maybe still working
 ```
 
 ### Test 10b: Resume Active Worker
@@ -668,11 +558,8 @@ Then:
 ```
 
 **Expected Response:**
-```json
-{
-  "error": "Worker slow-worker-uuid is not in completed state (current: WorkerStatus.ACTIVE)",
-  "type": "ToolError"
-}
+```
+Error: Worker slow-worker-uuid not found. maybe still working
 ```
 
 ### Test 10c: Wait with No Active Workers
@@ -691,21 +578,16 @@ Then:
 ```
 
 **Expected Response:**
-```json
-{
-  "error": "No active workers to wait for",
-  "type": "ToolError"
-}
+```
+Error: No active workers to wait for
 ```
 
 ### Validation Checklist
 - [ ] Error messages are descriptive and actionable
-- [ ] Error type is "ToolError"
 - [ ] Server remains stable (no crashes)
 - [ ] Subsequent valid requests still work
 - [ ] Error identifies specific worker_id when applicable
 - [ ] Error explains why operation failed
-- [ ] Error suggests next steps when possible
 
 ### Error Message Quality
 Good error messages should:
@@ -775,10 +657,7 @@ call_tool "mcp__async_worker_manager__wait" '{}'
 worker_id=$(call_tool "mcp__async_worker_manager__spawn_worker" \
   '{"description": "File write test", "prompt": "Create /tmp/test-async-worker.txt with hello"}')
 wait_result=$(call_tool "mcp__async_worker_manager__wait" '{}')
-request_id=$(echo "$wait_result" | jq -r '.pending_permissions[0].request_id')
-call_tool "mcp__async_worker_manager__approve_permission" \
-  "{\"request_id\": \"$request_id\", \"allow\": true}"
-call_tool "mcp__async_worker_manager__wait" '{}'
+# Permissions are auto-approved, file should be created
 
 # Test 9: Failed Workers
 worker_id=$(call_tool "mcp__async_worker_manager__spawn_worker" \
@@ -796,11 +675,11 @@ call_tool "mcp__async_worker_manager__resume_worker" \
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| Test Pass Rate | 100% | All 10 tests pass |
+| Test Pass Rate | 100% | All 11 tests pass |
 | Worker Creation Time | < 5s | Time to spawn worker |
 | Wait Response Time | < 2s after all complete | Time for wait to return |
 | Session Resumption | 100% | Same session_id maintained |
-| Permission Handling | 100% | Request → approve → complete flow |
+| Permission Handling | 100% | Auto-approval works correctly |
 | Error Clarity | 100% | All errors have actionable messages |
 | File Access | 100% | All conversation history files readable |
 
@@ -823,10 +702,10 @@ call_tool "mcp__async_worker_manager__resume_worker" \
 - Check session_id format in conversation history
 - Ensure worker_id is correct
 
-### Permission Not Appearing
-- Worker must request permission first
-- Check pending_permissions list in wait result
-- Verify worker is blocked waiting for permission
+### Permission Issues
+- Permissions are auto-approved for /tmp and home directory
+- Workers should complete without manual intervention
+- Check worker completed successfully in wait result
 
 ### File Not Found
 - conversation_history_file_path is absolute path
@@ -834,14 +713,24 @@ call_tool "mcp__async_worker_manager__resume_worker" \
 - Check file was created (returncode 0)
 
 ### Failed Workers
-- Check error_hint for actionable guidance
-- Read conversation_history_file_path for partial output
-- Verify tool names and MCP server config
+- Workers handle errors gracefully with helpful explanations
+- Read conversation_history_file_path for worker's response
+- Check that worker completed without crashing
 
 ---
 
 ## Version History
 
+- **v0.3.0** (2025-10-24) - Major API refactor
+  - **BREAKING**: `wait()` now returns `Dict[str, CompleteTask]` instead of `WorkerState`
+  - **BREAKING**: Removed `failed` list - failed workers now raise exceptions
+  - **BREAKING**: Removed `pending_permissions` - permissions auto-approved
+  - **BREAKING**: Removed `approve_permission` tool
+  - **BREAKING**: `CompleteTask` simplified - removed `worker_id` and `claude_session_id` fields
+  - Updated all test scenarios for dict-based API
+  - Marked Test 8 (Permission Handling) as obsolete
+  - Updated Test 9 (Failed Workers) for exception-based error handling
+  - Updated Test 10 error messages
 - **v0.2.0** (2025-10-23) - Updated for current API
   - Complete command reference for all 10 tests
   - Updated tool names (spawn_worker, resume_worker, wait)
