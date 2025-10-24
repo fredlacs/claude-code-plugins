@@ -70,7 +70,10 @@ async def spawn_worker(
     worker_id = str(uuid.uuid4())
     task = asyncio.create_task(
         run_claude_job(
-            prompt=prompt, worker_id=worker_id, agent_type=agent_type, options=options
+            prompt=description + prompt,
+            worker_id=worker_id,
+            agent_type=agent_type,
+            options=options,
         )
     )
     active_tasks[worker_id] = task
@@ -97,7 +100,9 @@ async def resume_worker(
         if not isinstance(session_id, str):
             raise ToolError("invalid std out format without session id")
     except FileNotFoundError:
-        raise ToolError(f"Conversation history file not found: {complete_task.conversation_history_file_path}")
+        raise ToolError(
+            f"Conversation history file not found: {complete_task.conversation_history_file_path}"
+        )
     except json.JSONDecodeError as e:
         raise ToolError(f"Invalid JSON in conversation history: {e}")
     except OSError as e:
