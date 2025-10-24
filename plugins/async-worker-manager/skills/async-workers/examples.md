@@ -9,7 +9,7 @@ mcp://async_worker_manager/spawn_worker("Task 2", "Find all config files")
 mcp://async_worker_manager/spawn_worker("Task 3", "Analyze project dependencies")
 
 mcp://async_worker_manager/wait()  # Blocks until ALL complete
-→ Returns: result.completed with conversation_history_file_path for each worker
+→ Returns: Dict[worker_id, CompleteTask] with conversation_history_file_path for each worker
 ```
 
 ## 2. Temperature Sweep (Creativity Control)
@@ -87,7 +87,7 @@ mcp://async_worker_manager/spawn_worker("Research", "Explain React hooks in deta
 → Returns: worker_id
 
 mcp://async_worker_manager/wait()
-→ Returns: result.completed[0] with session info
+→ Returns: Dict[worker_id, CompleteTask] with conversation_history_file_path
 
 # Follow up with same worker (maintains context)
 mcp://async_worker_manager/resume_worker(worker_id, "Now show examples with useEffect")
@@ -120,81 +120,46 @@ mcp://async_worker_manager/spawn_worker(
 mcp://async_worker_manager/wait()
 ```
 
-## 8. Permission Approval with User Confirmation
+## 8. Accessing Worker Results
+
+All workers write their output to `logs/worker-{id}.json`. You can access these files using the file paths returned by `wait()`:
 
 ```
-# Worker that requires permission (e.g., file write, bash execution)
-mcp://async_worker_manager/spawn_worker(
-    description="File creator",
-    prompt="Create a file at /tmp/test.txt with content 'Hello World'"
-)
+# Spawn workers
+worker1 = mcp://async_worker_manager/spawn_worker("Task 1", "Research async patterns")
+worker2 = mcp://async_worker_manager/spawn_worker("Task 2", "Find config files")
 
-# Permission handling loop
-while True:
-    result = mcp://async_worker_manager/wait()
+# Wait for completion
+result = mcp://async_worker_manager/wait()
+→ Returns: Dict[worker_id, CompleteTask]
 
-    # Check for pending permissions
-    if result.pending_permissions:
-        for perm in result.pending_permissions:
-            # Ask user via AskUserQuestion
-            answers = AskUserQuestion(
-                questions=[{
-                    "question": f"Allow worker to use {perm.tool}?",
-                    "header": "Permission",
-                    "multiSelect": False,
-                    "options": [
-                        {
-                            "label": "Allow",
-                            "description": f"Grant permission for tool: {perm.tool}"
-                        },
-                        {
-                            "label": "Deny",
-                            "description": "Reject this permission request"
-                        }
-                    ]
-                }]
-            )
-
-            # Parse answer and approve/deny
-            question_text = f"Allow worker to use {perm.tool}?"
-            allow = (answers[question_text] == "Allow")
-
-            # Apply decision
-            mcp://async_worker_manager/approve_permission(
-                request_id=perm.request_id,
-                worker_id=perm.worker_id,
-                allow=allow,
-                reason="User denied" if not allow else None
-            )
-        continue  # Loop back to wait() after approval
-
-    # Workers completed
-    if result.completed:
-        print("Worker completed successfully")
-        break
-
-    # Handle failures
-    if result.failed:
-        for failed in result.failed:
-            print(f"Worker failed: {failed.error_hint}")
-        break
+# Access conversation history
+for worker_id, task in result.items():
+    file_path = task.conversation_history_file_path
+    # Read the file to see worker's output
+    Read(file_path=file_path)
 ```
 
 **Key Points:**
-- `AskUserQuestion` surfaces permission to user before auto-approving
-- `answers` dict maps question text to selected label ("Allow" or "Deny")
-- Compare `answers[question_text] == "Allow"` to determine boolean
-- Must call `wait()` again after `approve_permission` to unblock worker
+- `wait()` returns a dict mapping worker_id → CompleteTask
+- Each CompleteTask has `conversation_history_file_path` field
+- Files contain full conversation history, costs, and results
+- Permissions are auto-approved - no manual intervention needed
 
-## Accessing Results
+## Quick Reference
 
 ```
-mcp://async_worker_manager/wait()
-→ Returns: result.completed[0].conversation_history_file_path = "logs/worker-{id}.json"
+# Spawn workers (non-blocking)
+worker_id = mcp://async_worker_manager/spawn_worker(description, prompt, agent_type, options)
 
-Use the file path with bash:
-```
+# Wait for ALL workers to complete (blocking)
+result = mcp://async_worker_manager/wait()
+→ Returns: Dict[worker_id, CompleteTask]
 
-```sh
-tail -20 logs/worker-{id}.json
+# Access results
+result[worker_id].conversation_history_file_path
+→ Points to: logs/worker-{id}.json
+
+# Resume completed worker
+mcp://async_worker_manager/resume_worker(worker_id, "Follow-up question")
 ```

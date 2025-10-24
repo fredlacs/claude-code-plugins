@@ -16,6 +16,12 @@ In Claude Code, run:
 
 ## Available Plugins
 
+### async-worker-manager
+
+Spawn multiple Claude workers asynchronously. Task tool replacement with resumable conversations and file-based output. Permissions auto-approved.
+
+**Requirements:** Python 3.13+, `claude` in PATH
+
 ### audio-notifications
 
 Speaks Claude Code notifications aloud using macOS text-to-speech.

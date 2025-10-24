@@ -33,11 +33,11 @@ id1 = spawn_worker("Research", "Research Python async patterns")
 id2 = spawn_worker("Analyze", "Analyze codebase architecture")
 
 # Wait for ALL to complete
-result = wait()
+result = wait()  # Returns Dict[worker_id → CompleteTask]
 
 # Access results
-for worker in result.completed:
-    # cat {worker.conversation_history_file_path}
+for worker_id, worker in result.items():
+    # Read {worker.conversation_history_file_path}
     pass
 ```
 
@@ -92,37 +92,20 @@ id = spawn_worker(
 ### wait
 
 ```python
-wait() -> WorkerState
+wait() -> Dict[str, CompleteTask]
 ```
 
-Wait for ALL active workers to complete or permissions to be needed.
+Wait for ALL active workers to complete.
 
-**Returns:**
+**Returns:** Dictionary mapping worker_id to CompleteTask
 ```python
 {
-    "completed": [
-        {
-            "worker_id": "...",
-            "claude_session_id": "...",
-            "conversation_history_file_path": "/path/to/logs/worker-{id}.json"
-        }
-    ],
-    "failed": [
-        {
-            "worker_id": "...",
-            "returncode": 1,
-            "conversation_history_file_path": "/path/to/logs/worker-{id}.json",
-            "error_hint": "Brief error description"
-        }
-    ],
-    "pending_permissions": [
-        {
-            "request_id": "...",
-            "worker_id": "...",
-            "tool": "Bash",
-            "input": {"command": "ls"}
-        }
-    ]
+    "worker-id-1": {
+        "conversation_history_file_path": "/absolute/path/to/logs/worker-id-1.json"
+    },
+    "worker-id-2": {
+        "conversation_history_file_path": "/absolute/path/to/logs/worker-id-2.json"
+    }
 }
 ```
 
@@ -130,14 +113,21 @@ Wait for ALL active workers to complete or permissions to be needed.
 
 ```python
 # Batch mode
-spawn_worker("Task 1", "...")
-spawn_worker("Task 2", "...")
+id1 = spawn_worker("Task 1", "...")
+id2 = spawn_worker("Task 2", "...")
 result = wait()  # Blocks until both complete
+# result = {id1: CompleteTask(...), id2: CompleteTask(...)}
+
+# Access conversation history
+for worker_id, worker_data in result.items():
+    print(worker_data.conversation_history_file_path)
 
 # Sequential mode
-spawn_worker("Task", "...")
+id = spawn_worker("Task", "...")
 result = wait()
-spawn_worker("Next", "...")
+file_path = result[id].conversation_history_file_path
+
+id2 = spawn_worker("Next", "...")
 result = wait()
 ```
 
@@ -162,31 +152,6 @@ result = wait()
 
 resume_worker(id, "Suggest improvements")
 result = wait()
-```
-
----
-
-### approve_permission
-
-```python
-approve_permission(request_id: str, allow: bool, reason: Optional[str] = None)
-```
-
-Approve or deny worker permission request.
-
-**Example:**
-
-```python
-id = spawn_worker("System check", "Analyze /etc files")
-
-while True:
-    result = wait()
-
-    for perm in result.pending_permissions:
-        approve_permission(perm.request_id, allow=True)
-
-    if result.completed:
-        break
 ```
 
 ---
@@ -239,7 +204,7 @@ spawn_worker("Complex design", "Design a caching system", options={
 | **Blocking** | Yes (fire & forget) | No (spawn returns immediately) |
 | **Parallel** | Automatic | Explicit (spawn → wait) |
 | **Resumable** | No | ✅ Yes (resume_worker) |
-| **Permissions** | Automatic | Explicit (approve_permission) |
+| **Permissions** | Automatic | ✅ Auto-approved (no manual approval) |
 | **Output** | Inline text | File paths (98% smaller) |
 | **Options** | All Task params | ✅ Same (via options dict) |
 
@@ -249,7 +214,17 @@ spawn_worker("Complex design", "Design a caching system", options={
 - Explicit control over when to wait
 - Multi-turn conversations (resume)
 - Minimal context usage (file-based output)
-- Permission approval control
+- Custom model/temperature settings
+
+---
+
+## Permission Handling
+
+**Permissions are auto-approved.** Workers can use all tools (Bash, Write, Read, etc.) without manual approval. All permission requests are automatically approved for simplicity.
+
+**Security Note:** Workers run in the same security context as your main Claude Code session. They have full access to the filesystem and can execute arbitrary commands. Use only in trusted environments.
+
+All tool executions are logged in the conversation history file for audit purposes.
 
 ---
 
@@ -265,12 +240,12 @@ Workers write to `logs/worker-{id}.json` containing:
 **Access via bash:**
 
 ```bash
-# From result
-worker = result.completed[0]
-file = worker.conversation_history_file_path
+# From result dict
+worker_id=$(echo "first_worker_id_here")
+file=$(echo "result[$worker_id].conversation_history_file_path")
 
 # Read full output
-cat {file}
+cat logs/worker-{id}.json
 
 # Extract fields
 jq -r .result {file}           # Response text

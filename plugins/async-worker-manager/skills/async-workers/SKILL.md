@@ -1,6 +1,6 @@
 ---
 name: async-workers
-description: Task tool replacement. Same API (description, prompt, agent_type), but async, resumable, and explicit control. Use spawn_worker() instead of Task(). Batch mode: spawn multiple, wait() returns all.
+description: Task tool replacement. Same API (description, prompt, agent_type), but async, resumable, and explicit control. Use spawn_worker() instead of Task(). Batch mode - spawn multiple, wait() returns all. Permissions auto-approved.
 ---
 
 # Async Workers
@@ -20,15 +20,15 @@ mcp://async_worker_manager/spawn_worker(
 
 # Wait for ALL workers to complete
 mcp://async_worker_manager/wait()
-→ Returns: {completed: [...], failed: [...], pending_permissions: [...]}
+→ Returns: Dict[worker_id, CompleteTask]
 
-# Access conversation history via result.completed[].conversation_history_file_path
+# Access conversation history via result[worker_id].conversation_history_file_path
 ```
 
 ## Execution Model
 
 **You should:**
-- ✅ **Execute** MCP tools directly (spawn_worker, wait, resume_worker, approve_permission)
+- ✅ **Execute** MCP tools directly (spawn_worker, wait, resume_worker)
 - ✅ **Read** conversation history files using Read tool
 - ⚠️ **Never** write pseudo-code - make actual tool calls
 
@@ -53,7 +53,7 @@ mcp://async_worker_manager/spawn_worker("Compare", "Compare approaches")
 
 # 2. Wait for ALL to complete
 mcp://async_worker_manager/wait()
-→ Returns: result with completed, failed, pending_permissions
+→ Returns: Dict[worker_id, CompleteTask]
 
 # 3. Access results via bash
 ```
@@ -71,75 +71,11 @@ tail -20 logs/worker-{id}.json
 ```
 # Resume completed worker (extends Task)
 mcp://async_worker_manager/resume_worker(worker_id, prompt="Follow-up question")
-
-# Approve permissions
-mcp://async_worker_manager/approve_permission(request_id, worker_id, allow=True)
 ```
 
-## Permission Handling Pattern
+## Permission Handling
 
-Workers may request permissions (e.g., Bash, Write). Handle with AskUserQuestion + approval loop:
-
-```python
-# Spawn worker that needs permissions
-worker_id = spawn_worker("File operation", "Create file /tmp/test.txt")
-
-# Permission approval loop with user confirmation
-while True:
-    result = wait()
-
-    # Handle pending permissions
-    if result.pending_permissions:
-        for perm in result.pending_permissions:
-            # Surface permission request to user via AskUserQuestion
-            answers = AskUserQuestion(
-                questions=[{
-                    "question": f"Allow worker to use {perm.tool} with input: {perm.input}?",
-                    "header": "Permission",
-                    "multiSelect": False,
-                    "options": [
-                        {"label": "Allow", "description": "Grant permission to execute this tool"},
-                        {"label": "Deny", "description": "Reject permission request"}
-                    ]
-                }]
-            )
-
-            # Parse answer: check if user selected "Allow"
-            question_text = f"Allow worker to use {perm.tool} with input: {perm.input}?"
-            allow = (answers[question_text] == "Allow")
-
-            # Apply decision
-            approve_permission(
-                request_id=perm.request_id,
-                worker_id=perm.worker_id,
-                allow=allow
-            )
-        continue  # Must wait() again after approval
-
-    # Workers complete when no more permissions needed
-    if result.completed:
-        break
-
-    # Handle failures
-    if result.failed:
-        # Check error_hint for actionable feedback
-        for failed in result.failed:
-            print(f"Worker {failed.worker_id} failed: {failed.error_hint}")
-        break
-```
-
-**Control Flow:**
-1. `wait()` returns pending_permissions
-2. `AskUserQuestion` surfaces each permission to user
-3. Parse `answers` dict: compare answer to "Allow" label
-4. `approve_permission(request_id, worker_id, allow=<True/False>)` based on answer
-5. `wait()` again to unblock worker
-
-**AskUserQuestion Parameters:**
-- `header`: "Permission" (short label, max 12 chars)
-- `multiSelect`: `False` (binary approve/deny decision)
-- `answers`: Returns dict `{question_text: selected_label}`
-- Parse: `answers[question_text] == "Allow"` → `allow=True`
+**Permissions are auto-approved.** Workers can use all tools (Bash, Write, Read, etc.) without manual approval. All permission requests are automatically approved for simplicity. Use only in trusted environments.
 
 ## Advanced Options
 
@@ -203,7 +139,7 @@ Access via `worker.conversation_history_file_path` from completed workers.
 ✅ **All Task features** - Same description, prompt, agent_type parameters
 ✅ **Plus resumability** - Continue conversations with resume_worker
 ✅ **Plus explicit control** - Choose when to wait for results
-✅ **Plus permission control** - Handle permissions explicitly
+✅ **Plus auto-permissions** - Workers can use tools without manual approval
 ✅ **Plus customization** - Model, temperature, thinking settings
 
 **For any parallel work, use async-workers:**
