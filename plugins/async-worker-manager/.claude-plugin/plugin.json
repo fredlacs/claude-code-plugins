@@ -6,6 +6,7 @@
     "name": "nanco"
   },
   "mcpServers": "./mcp-config.json",
+  "skills": "./skills/",
   "hooks": {
     "PreToolUse": [
       {

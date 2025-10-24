@@ -1,53 +1,8 @@
-# Agent Manager
+# Async Worker Manager
 
-**Async MCP server for managing concurrent Claude Code workers with racing pattern.**
+**Task tool, but async + resumable**
 
-Fire up multiple Claude workers, wait them to completion, and resume conversations seamlessly.
-
----
-
-## What It Does
-
-Manage multiple Claude Code workers as async subprocesses using a racing pattern:
-
-```
-create_async_worker(prompt)      → Spawn worker, returns task_id
-wait(timeout)             → Wait for first completion, returns winner
-peek(worker_id)                   → View stdout/stderr of complete worker
-write_to_worker(worker_id, input) → Resume completed worker
-```
-
----
-
-## Architecture
-
-**Core Concept:** Task-based concurrency with racing pattern
-
-```
-┌─────────────────────────────────────────┐
-│  Active Tasks (running)                 │
-│  [task-1] [task-2] [task-3]             │
-│     ↓         ↓         ↓               │
-│  claude   claude    claude              │
-└─────────────────────────────────────────┘
-                  │
-            wait()
-                  │
-                  ↓
-         ┌────────────────┐
-         │ First to finish │  (winner moved to complete)
-         └────────────────┘
-                  │
-                  ↓
-┌─────────────────────────────────────────┐
-│  Complete Tasks (awaiting input)        │
-│  [winner] ← write_to_worker()           │
-└─────────────────────────────────────────┘
-```
-
-**Two-Phase Lifecycle:**
-1. **Active** - Worker running, awaiting completion
-2. **Complete** - Worker finished, awaiting input for resumption
+Spawn multiple Claude instances as async workers using the same API as the Task tool. Workers run until completion, write conversation histories to files for minimal context usage, and support multi-turn resumption.
 
 ---
 
@@ -58,226 +13,294 @@ write_to_worker(worker_id, input) → Resume completed worker
 uv sync
 ```
 
-**Run Server:**
-```bash
-uv run python src/server.py
-```
-
 **Configure in Claude Code:**
 ```json
 {
   "mcpServers": {
-    "agent-manager": {
+    "async-worker-manager": {
       "command": "uv",
       "args": ["run", "python", "src/server.py"],
-      "cwd": "/path/to/agent-manager"
+      "cwd": "/path/to/async-worker-manager"
     }
   }
 }
 ```
 
----
-
-## Example Usage
-
-Use via Claude Code's MCP integration, or programmatically:
-
+**Basic Usage (Same as Task):**
 ```python
-from fastmcp import Client
-from server import mcp
+# Spawn workers
+id1 = spawn_worker("Research", "Research Python async patterns")
+id2 = spawn_worker("Analyze", "Analyze codebase architecture")
 
-async with Client(mcp) as client:
-    # 1. Create multiple workers with custom timeouts
-    task1 = await client.call_tool("create_async_worker", {
-        "prompt": "Research Python async patterns",
-        "timeout": 600.0  # 10 minutes for complex research
-    })
-    task2 = await client.call_tool("create_async_worker", {
-        "prompt": "Find examples of racing in asyncio",
-        "timeout": 300.0  # 5 minutes (default)
-    })
+# Wait for ALL to complete
+result = wait()  # Returns Dict[worker_id → CompleteTask]
 
-    # 2. Wait to find first completion
-    winner = await client.call_tool("wait", {"timeout": 60.0})
-    print(f"Winner: {winner}")
-
-    # 3. Peek at the output
-    result = await client.call_tool("peek", {"worker_id": winner})
-    print(f"Output: {result['stdout']}")
-
-    # 4. Resume conversation (uses original worker timeout)
-    await client.call_tool("write_to_worker", {
-        "worker_id": winner,
-        "input": "Can you elaborate on that?"
-    })
-
-    # 5. Wait again for response
-    winner = await client.call_tool("wait", {"timeout": 60.0})
+# Access results
+for worker_id, worker in result.items():
+    # Read {worker.conversation_history_file_path}
+    pass
 ```
 
 ---
 
 ## API Reference
 
-### create_async_worker(prompt: str, timeout: float = 300.0) → str
+### spawn_worker
 
-Create a new Claude worker and start it with the given prompt.
+```python
+spawn_worker(
+    description: str,
+    prompt: str,
+    agent_type: Optional[str] = None,
+    options: Optional[dict] = None
+) -> str  # worker_id
+```
+
+Spawn a Claude worker (non-blocking). **Same parameters as Task tool.**
 
 **Parameters:**
-- `prompt` - The initial prompt for the Claude worker
-- `timeout` - Maximum seconds to wait for worker completion (default: 300 seconds / 5 minutes)
+- `description`: Short 3-5 word task description
+- `prompt`: Detailed instructions
+- `agent_type`: Optional agent specialization
+  - `"general-purpose"` - General tasks
+  - `"Explore"` - Fast codebase exploration
+  - `"statusline-setup"` - Status line configuration
+  - `"output-style-setup"` - Output style configuration
+- `options`: Optional settings dict (see Advanced Options below)
 
-**Returns:** `task_id` (UUID string)
-**Raises:** ToolError if max workers (10) reached or claude not in PATH
+**Returns:** `worker_id` (UUID string)
+
+**Examples:**
 
 ```python
-# With default 5-minute timeout
-task_id = await client.call_tool("create_async_worker", {
-    "prompt": "Explain async/await in Python"
-})
-# → "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# Basic (same as Task)
+id = spawn_worker("Research", "Research async patterns")
 
-# With custom timeout
-task_id = await client.call_tool("create_async_worker", {
-    "prompt": "Complex research task",
-    "timeout": 600.0  # 10 minutes
-})
+# With agent type
+id = spawn_worker("Find files", "Find all .env files", agent_type="Explore")
+
+# With options
+id = spawn_worker(
+    "Quick check",
+    "Check for syntax errors",
+    options={"model": "claude-haiku-4", "temperature": 0.3}
+)
 ```
-
-**Note:** The timeout is preserved when resuming the worker via `write_to_worker`.
 
 ---
 
-### wait(timeout: float = 30.0) → str
-
-Wait for the first active worker to complete.
-
-**Returns:** `task_id` of winning worker
-**Raises:** ToolError on timeout or if no active workers
+### wait
 
 ```python
-winner = await client.call_tool("wait", {"timeout": 60.0})
-# → "a1b2c3d4-..."
+wait() -> Dict[str, CompleteTask]
 ```
 
-**Behavior:**
-- Moves winner from active → complete
-- Returns immediately when any worker finishes
-- Times out if no worker completes within timeout
+Wait for ALL active workers to complete.
 
----
-
-### peek(worker_id: str) → dict
-
-View stdout/stderr of a complete worker.
-
-**Returns:** dict with status, stdout, stderr
-**Raises:** ToolError if worker not found or not complete
-
+**Returns:** Dictionary mapping worker_id to CompleteTask
 ```python
-result = await client.call_tool("peek", {"worker_id": task_id})
-```
-
-**Response format:**
-
-```json
 {
-  "task_id": "...",
-  "status": "complete",
-  "session_id": "session-123",
-  "stdout": "Hello world!",
-  "stderr": ""
+    "worker-id-1": {
+        "conversation_history_file_path": "/absolute/path/to/logs/worker-id-1.json"
+    },
+    "worker-id-2": {
+        "conversation_history_file_path": "/absolute/path/to/logs/worker-id-2.json"
+    }
 }
 ```
 
----
-
-### write_to_worker(worker_id: str, input: str) → dict
-
-Resume a completed worker with new input.
-
-**Returns:** Success message
-**Raises:** ToolError if worker not found or not in complete state
+**Examples:**
 
 ```python
-result = await client.call_tool("write_to_worker", {
-    "worker_id": task_id,
-    "input": "Can you elaborate on that?"
-})
-# → {"success": true, "message": "Resumed worker ..."}
+# Batch mode
+id1 = spawn_worker("Task 1", "...")
+id2 = spawn_worker("Task 2", "...")
+result = wait()  # Blocks until both complete
+# result = {id1: CompleteTask(...), id2: CompleteTask(...)}
+
+# Access conversation history
+for worker_id, worker_data in result.items():
+    print(worker_data.conversation_history_file_path)
+
+# Sequential mode
+id = spawn_worker("Task", "...")
+result = wait()
+file_path = result[id].conversation_history_file_path
+
+id2 = spawn_worker("Next", "...")
+result = wait()
 ```
 
-**Behavior:**
-- Worker must be in complete state (after wait)
-- Uses `claude --resume <session_id>` to continue conversation
-- Moves worker back to active state
-- Use wait() again to wait for response
+---
+
+### resume_worker
+
+```python
+resume_worker(worker_id: str, prompt: str)
+```
+
+Resume a completed worker with follow-up prompt. **Extends Task tool with resumability.**
+
+**Examples:**
+
+```python
+id = spawn_worker("Analyze", "Analyze this codebase")
+result = wait()
+
+resume_worker(id, "What about test coverage?")
+result = wait()
+
+resume_worker(id, "Suggest improvements")
+result = wait()
+```
+
+---
+
+## Advanced Options
+
+The `options` parameter accepts:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `model` | str | `"claude-sonnet-4-5"` | Model to use |
+| `system` | str | None | Custom system prompt |
+| `temperature` | float | 1.0 | Randomness (0.0-1.0) |
+| `max_tokens` | int | 4096 | Max generation tokens |
+| `thinking` | bool | False | Enable extended thinking |
+| `top_p` | float | None | Nucleus sampling |
+| `top_k` | int | None | Top-k sampling |
+
+**Examples:**
+
+```python
+# Different model
+spawn_worker("Quick scan", "...", options={"model": "claude-haiku-4"})
+
+# Custom system prompt
+spawn_worker("Security review", "...", options={
+    "system": "You are a security expert. Focus on vulnerabilities."
+})
+
+# Temperature sweep (same prompt, different creativity)
+for temp in [0.0, 0.5, 1.0]:
+    spawn_worker(f"Temp {temp}", "Generate function names", options={
+        "temperature": temp
+    })
+
+# Extended thinking
+spawn_worker("Complex design", "Design a caching system", options={
+    "thinking": True,
+    "max_tokens": 8192
+})
+```
+
+---
+
+## Comparison with Task Tool
+
+| Feature | Task Tool | Async Workers |
+|---------|-----------|---------------|
+| **Core API** | ✅ `description`, `prompt`, `agent_type` | ✅ Same |
+| **Blocking** | Yes (fire & forget) | No (spawn returns immediately) |
+| **Parallel** | Automatic | Explicit (spawn → wait) |
+| **Resumable** | No | ✅ Yes (resume_worker) |
+| **Permissions** | Automatic | ✅ Auto-approved (no manual approval) |
+| **Output** | Inline text | File paths (98% smaller) |
+| **Options** | All Task params | ✅ Same (via options dict) |
+
+**Use Task when:** You want fire-and-forget parallel execution with inline results
+
+**Use Async Workers when:** You need:
+- Explicit control over when to wait
+- Multi-turn conversations (resume)
+- Minimal context usage (file-based output)
+- Custom model/temperature settings
+
+---
+
+## Permission Handling
+
+**Permissions are auto-approved.** Workers can use all tools (Bash, Write, Read, etc.) without manual approval. All permission requests are automatically approved for simplicity.
+
+**Security Note:** Workers run in the same security context as your main Claude Code session. They have full access to the filesystem and can execute arbitrary commands. Use only in trusted environments.
+
+All tool executions are logged in the conversation history file for audit purposes.
+
+---
+
+## Conversation History Files
+
+Workers write to `logs/worker-{id}.json` containing:
+- Full conversation history
+- Result text
+- Session ID (for resume)
+- Cost tracking
+- Model settings
+
+**Access via bash:**
+
+```bash
+# From result dict
+worker_id=$(echo "first_worker_id_here")
+file=$(echo "result[$worker_id].conversation_history_file_path")
+
+# Read full output
+cat logs/worker-{id}.json
+
+# Extract fields
+jq -r .result {file}           # Response text
+jq .total_cost_usd {file}       # Cost
+jq .model {file}                # Model used
+jq .session_id {file}           # For resume
+
+# Compare costs across workers
+for f in logs/worker-*.json; do
+    echo "$(jq -r .model $f): \$$(jq .total_cost_usd $f)"
+done
+```
+
+**Benefits:**
+- 98% context reduction (file path vs full output)
+- Persistent records for later review
+- Easy comparison with jq/grep
+- Cost tracking
 
 ---
 
 ## Use Cases
 
-### 1. Parallel Research Tasks
-
-Create multiple research workers and use the first result that completes:
-
+### Temperature Sweep
 ```python
-tasks = []
-for topic in ["async patterns", "concurrency models", "event loops"]:
-    result = await client.call_tool("create_async_worker", {
-        "prompt": f"Research {topic} in Python"
-    })
-    tasks.append(result.data)
+prompt = "Generate creative function names for auth service"
 
-# Get first result
-winner = await client.call_tool("wait", {"timeout": 120.0})
-result = await client.call_tool("peek", {"worker_id": winner})
+for temp in [0.0, 0.5, 1.0]:
+    spawn_worker(f"Temp {temp}", prompt, options={"temperature": temp})
+
+result = wait()
+# Compare: deterministic → balanced → creative
 ```
 
-### 2. Interactive Multi-Agent System
-
-Create agents with different specialties and interact with them:
-
+### Model Racing
 ```python
-# Create specialized agents
-researcher = await client.call_tool("create_async_worker", {
-    "prompt": "You are a research specialist. Research async patterns."
-})
-coder = await client.call_tool("create_async_worker", {
-    "prompt": "You are a coding specialist. Write async examples."
-})
+# Compare speed vs quality
+haiku = spawn_worker("Fast", "...", options={"model": "claude-haiku-4"})
+sonnet = spawn_worker("Deep", "...", options={"model": "claude-sonnet-4-5"})
 
-# Wait to see who finishes first
-winner = await client.call_tool("wait", {"timeout": 60.0})
-
-# Continue conversation with winner
-await client.call_tool("write_to_worker", {
-    "worker_id": winner,
-    "input": "Can you provide more detail?"
-})
+result = wait()
 ```
 
-### 3. Task Queue with First-Come-First-Served
-
-Process tasks as they complete rather than waiting for all:
-
+### Multi-Perspective Code Review
 ```python
-# Create 5 workers with different tasks
-for i in range(5):
-    await client.call_tool("create_async_worker", {
-        "prompt": f"Process task {i}"
-    })
+personas = [
+    ("Security", "You are a security auditor"),
+    ("Performance", "You are a performance engineer"),
+]
 
-# Process results as they complete
-while True:
-    try:
-        winner = await client.call_tool("wait", {"timeout": 60.0})
-        result = await client.call_tool("peek", {"worker_id": winner})
-        print(f"Completed: {result['stdout']}")
-    except Exception as e:
-        if "No active workers" in str(e):
-            break  # All workers complete
-        raise  # Other error
+for name, system in personas:
+    spawn_worker(name, "Review this code", options={"system": system})
+
+result = wait()
+# Get different expert perspectives
 ```
 
 ---
@@ -285,142 +308,23 @@ while True:
 ## Requirements
 
 - **Python:** 3.13+
-- **OS:** macOS or Linux (Unix-based systems)
-- **Commands:** `claude` must be in PATH
+- **OS:** macOS or Linux (Unix sockets)
+- **Commands:** `claude` in PATH
 - **Dependencies:** `fastmcp>=2.12.5`
 
 ---
 
 ## Development
 
-**Run unit tests (fast, no claude needed):**
-```bash
-uv run pytest -v -m "not integration" tests/test_server_v2.py
-```
-
-**Run integration tests (requires claude):**
-```bash
-uv run pytest -v -s -m integration tests/test_integration_v2.py
-```
-
-**Run all tests:**
+**Run tests:**
 ```bash
 uv run pytest -v
 ```
 
----
-
-## How It Works
-
-### 1. Worker Creation
-```python
-# Spawn claude as subprocess with timeout
-proc = await asyncio.create_subprocess_exec(
-    "claude", "-p", prompt, "--output-format", "json",
-    stdout=PIPE, stderr=PIPE
-)
-
-# Wait with timeout, decode output
-out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-stdout_str = out.decode('utf-8')
-
-# Create task to wait for completion
-task = asyncio.create_task(run_claude_job(prompt, timeout=timeout))
-active_tasks.append(ActiveTask(task_id=uuid, task=task, timeout=timeout))
-```
-
-### 2. Racing Pattern
-```python
-# Wait for first completion using asyncio.wait
-done, _ = await asyncio.wait(
-    [t.task for t in active_tasks],
-    return_when=asyncio.FIRST_COMPLETED
-)
-
-# Move winner to complete_tasks
-winner = next(iter(done))
-rc, stdout, stderr = await winner  # Already decoded strings
-session_id = parse_claude_output(stdout)  # Extract & validate
-complete_tasks.append(CompleteTask(..., timeout=task.timeout))
-```
-
-### 3. Session Resumption
-```python
-# Resume using claude --resume with original timeout
-proc = await asyncio.create_subprocess_exec(
-    "claude", "--resume", session_id, "-p", new_input,
-    stdout=PIPE, stderr=PIPE
-)
-out, err = await asyncio.wait_for(proc.communicate(), timeout=complete_task.timeout)
-```
-
----
-
-## Configuration
-
-**Max Active Workers:** 10 (only active workers count, complete workers unlimited)
-**Default Worker Timeout:** 300 seconds / 5 minutes (configurable per worker)
-**Default Wait Timeout:** 30 seconds (configurable per call)
-**Transport:** stdio (standard MCP)
-**Output Format:** JSON (from claude --output-format json)
-
-**Timeout Behavior:**
-- Each worker has its own timeout set at creation time
-- Timeout is preserved when resuming via `write_to_worker`
-- Different workers can have different timeouts running concurrently
-
----
-
-## Trade-offs
-
-**Advantages:**
-- ✅ True parallelism - workers run concurrently
-- ✅ Efficient - wait pattern returns immediately on first completion
-- ✅ Session continuity - resume conversations with --resume
-- ✅ Simple state - just two lists (active/complete)
-- ✅ Async-first - fully non-blocking
-
-**Limitations:**
-- ⚠️ No real-time streaming - output available after completion
-- ⚠️ Unix-only - requires Unix-like OS for subprocesses
-- ⚠️ Memory - stdout/stderr stored in memory per worker
-- ⚠️ Max 10 workers - prevent resource exhaustion
-
----
-
-## Troubleshooting
-
-**"Claude not in PATH"**
+**Debug workers:**
 ```bash
-# Ensure claude is installed and accessible
-which claude
-# Add to PATH if needed
-export PATH="/path/to/claude:$PATH"
+cat logs/worker-{id}.json | jq .
 ```
-
-**"Timeout waiting for workers"**
-- Increase timeout parameter in wait()
-- Check if claude is responding
-- Verify prompt is valid
-
-**"Max 10 active workers"**
-- Wait for active workers to complete via wait()
-- Workers automatically move from active to complete
-- Increase max limit in server.py if needed
-
-**"Claude process timed out after X seconds"**
-- Worker exceeded its configured timeout
-- Increase timeout when creating worker: `create_async_worker(prompt, timeout=600.0)`
-- Check if prompt is too complex or requires more time
-- Default is 300 seconds (5 minutes)
-
----
-
-## Roadmap
-
-- [ ] Add worker prioritization
-- [ ] Stream output in real-time during execution
-- [ ] Support Windows via different subprocess approach
 
 ---
 

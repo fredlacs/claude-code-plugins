@@ -1,11 +1,12 @@
 ---
 name: integration-test
-description: Run integration tests for the async-worker-manager MCP server. Validates all 4 core tools (create_async_worker, wait, peek, write_to_worker), racing pattern, error handling, and session resumption. Use when the user asks to "test the agent-manager MCP", "run integration tests", "verify async workers", or mentions "testing MCP server".
+description: Run integration tests for the async-worker-manager MCP server. Validates all 3 core tools (spawn_worker, wait, resume_worker), racing pattern, error handling, and session resumption. Use when the user asks to "test the async-worker-manager MCP", "run integration tests", "verify async workers", or mentions "testing MCP server".
 allowed-tools:
-  - mcp__agent_manager__create_async_worker
-  - mcp__agent_manager__wait
-  - mcp__agent_manager__peek
-  - mcp__agent_manager__write_to_worker
+  - mcp__async_worker_manager__spawn_worker
+  - mcp__async_worker_manager__wait
+  - mcp__async_worker_manager__resume_worker
+  - Read
+  - AskUserQuestion
 ---
 
 # Integration Test Skill
@@ -14,25 +15,30 @@ This skill runs comprehensive integration tests for the async-worker-manager MCP
 
 ## Test Suite Overview
 
-The integration test validates 6 key scenarios:
+The integration test validates 11 key scenarios:
 
 1. **Basic Worker Creation** - Verify worker spawning and ID generation
 2. **Wait for Completion** - Test the wait mechanism
-3. **Peek at Output** - Validate output retrieval
+3. **File-Based Output** - Validate conversation history file access
 4. **Resume Conversation** - Test session continuity
-5. **Parallel Racing** - Verify racing pattern with multiple workers
-6. **Error Handling** - Validate error messages
+5. **Parallel Workers** - Verify batch mode with multiple workers
+6. **Agent Types** - Test custom agent types
+7. **Worker Options** - Test temperature, model, thinking settings
+8. **Permission Handling** - Test permission request flow
+9. **Failed Workers** - Validate error handling and hints
+10. **Error Cases** - Validate error messages for invalid operations
+11. **Skill-Guided Permission Flow** - Verify async-workers skill guides agents to handle permissions correctly
 
 ## Detailed Test Scenarios
 
 ### Test 1: Create Worker
-**Objective:** Verify that `create_async_worker` spawns a worker and returns a valid UUID.
+**Objective:** Verify that `spawn_worker` spawns a worker and returns a valid UUID.
 
 **Command:**
 ```
-create_async_worker(
-  prompt: "Say hello and list exactly 3 programming languages",
-  timeout: 60.0
+spawn_worker(
+  description: "List programming languages",
+  prompt: "Say hello and list exactly 3 programming languages"
 )
 ```
 
@@ -51,148 +57,309 @@ create_async_worker(
 
 **Command:**
 ```
-wait(timeout: 60.0)
+wait()
 ```
 
 **Expected Outcome:**
-- Returns a list containing CompleteTask object(s)
-- Completes within timeout period
-- worker_id matches the one from Test 1
+- Returns Dict[worker_id, CompleteTask]
+- Dict contains the worker_id from Test 1 as a key
+- CompleteTask contains conversation_history_file_path
 
 **Validation:**
-- Response contains worker_id
-- Response includes claude_session_id
-- status field shows "complete"
+- Response is a dict with worker_id as key
+- Response includes conversation_history_file_path
+- File path exists and points to logs/worker-{id}.json
 
 ---
 
-### Test 3: Peek at Output
-**Objective:** Verify that `peek` retrieves stdout/stderr from completed worker.
+### Test 3: File-Based Output
+**Objective:** Verify that conversation history file contains the complete output.
 
 **Command:**
 ```
-peek(worker_id: "<worker_id_from_test_1>")
+Read(file_path: "<conversation_history_file_path_from_test_2>")
 ```
 
 **Expected Outcome:**
-- Returns CompleteTask with:
-  - worker_id
-  - claude_session_id (session-XXXXX format)
-  - std_out containing the response
-  - std_err (may be empty)
-  - timeout value
+- File exists and is readable
+- Contains JSON with:
+  - session_id (UUID format)
+  - result (the actual response text)
+  - type, duration_ms, num_turns, etc.
 
 **Validation:**
-- stdout contains "hello" (case-insensitive)
-- stdout contains 3 programming languages
-- session_id matches format "session-" + alphanumeric
+- JSON parses correctly
+- session_id field is present
+- result contains "hello" (case-insensitive)
+- result contains 3 programming languages
 
 ---
 
 ### Test 4: Resume Conversation
-**Objective:** Verify that `write_to_worker` resumes a completed worker's conversation.
+**Objective:** Verify that `resume_worker` resumes a completed worker's conversation.
 
 **Command:**
 ```
-write_to_worker(
+resume_worker(
   worker_id: "<worker_id_from_test_1>",
-  message: "Tell me more about the first language you mentioned"
+  prompt: "Tell me more about the first language you mentioned"
 )
 ```
 
 Then:
 ```
-wait(timeout: 60.0)
+wait()
 ```
 
 Then:
 ```
-peek(worker_id: "<worker_id_from_test_1>")
+Read(file_path: "<conversation_history_file_path>")
 ```
 
 **Expected Outcome:**
-- `write_to_worker` succeeds without error
-- Second `wait` returns the same worker_id
-- Second `peek` shows response about the first language
+- `resume_worker` succeeds without error
+- Second `wait` returns the same worker_id in dict
+- Conversation history file shows updated response about the first language
 - Same session_id maintained across resume
 
 **Validation:**
-- worker transitions from complete → active → complete
-- session_id remains consistent
-- stdout from second peek contains relevant information about the programming language
+- Worker transitions from completed → active → completed
+- session_id remains consistent in file
+- result field contains relevant information about the programming language
 
 ---
 
-### Test 5: Parallel Workers (Racing Pattern)
-**Objective:** Verify that multiple workers run concurrently and `wait` returns first completion.
+### Test 5: Parallel Workers (Batch Mode)
+**Objective:** Verify that multiple workers run concurrently and `wait` returns all completions.
 
 **Commands:**
 ```
 # Create 3 workers
-worker1 = create_async_worker(prompt: "Count to 3 slowly", timeout: 120.0)
-worker2 = create_async_worker(prompt: "Say 'quick response'", timeout: 120.0)
-worker3 = create_async_worker(prompt: "List 5 colors", timeout: 120.0)
+worker1 = spawn_worker(description: "Count slowly", prompt: "Count to 3 slowly")
+worker2 = spawn_worker(description: "Quick response", prompt: "Say 'quick response'")
+worker3 = spawn_worker(description: "List colors", prompt: "List 5 colors")
 
-# Wait for first completion
-winner = wait(timeout: 90.0)
+# Wait for all completions
+result = wait()
 ```
 
 **Expected Outcome:**
 - All 3 workers created successfully
-- `wait` returns immediately when first worker completes
-- winner.worker_id matches one of the 3 worker IDs
-- Other workers remain in active state
+- `wait` returns dict with all 3 worker_ids as keys
+- Each worker has unique worker_id
+- Each has conversation_history_file_path
 
 **Validation:**
 - 3 unique worker_ids generated
-- wait returns within reasonable time
-- peek(winner.worker_id) succeeds
-- Racing pattern works correctly
+- wait returns dict with all 3 workers
+- All conversation history files accessible
+- Batch mode works correctly
 
 ---
 
-### Test 6: Error Handling
+### Test 6: Agent Types
+**Objective:** Verify that custom agent_type parameter works.
+
+**Command:**
+```
+spawn_worker(
+  description: "Explore codebase",
+  prompt: "Find all Python files in the current directory",
+  agent_type: "Explore"
+)
+wait()
+```
+
+**Expected Outcome:**
+- Worker created with agent_type
+- Completes successfully
+- Output reflects the agent's behavior
+
+**Validation:**
+- Worker spawns without error
+- wait returns dict with worker completion
+- Conversation history shows agent followed the Explore pattern
+
+---
+
+### Test 7: Worker Options
+**Objective:** Verify that options (temperature, model, thinking) work.
+
+**Command:**
+```
+spawn_worker(
+  description: "Test with options",
+  prompt: "Explain what temperature means in LLMs",
+  options: {
+    "temperature": 0.5,
+    "model": "claude-sonnet-4-5",
+    "thinking": true
+  }
+)
+wait()
+```
+
+**Expected Outcome:**
+- Worker created with custom options
+- Completes successfully
+- Settings are applied (check stderr for model confirmation)
+
+**Validation:**
+- Worker spawns without error
+- wait returns dict with worker completion
+- Model setting is respected
+
+---
+
+### Test 8: Permission Handling
+**Objective:** Verify that permissions are auto-approved correctly.
+
+**Command:**
+```
+# Create worker that will need permission
+worker_id = spawn_worker(
+  description: "File write test",
+  prompt: "Create a test file named /tmp/test-async-worker.txt with content 'hello'"
+)
+
+# Wait for completion (permissions auto-approved)
+result = wait()
+```
+
+**Expected Outcome:**
+- `wait` returns dict with worker_id as key
+- Worker completes successfully
+- File was created at /tmp/test-async-worker.txt
+
+**Validation:**
+- Worker completes without manual permission approval
+- File operations succeed (verify file exists with correct content)
+- No permission prompts or blocking
+
+---
+
+### Test 9: Failed Workers
+**Objective:** Verify that workers handle errors gracefully.
+
+**Command:**
+```
+# Create worker with challenging request
+spawn_worker(
+  description: "Invalid tool",
+  prompt: "Use the tool 'nonexistent_tool' to do something"
+)
+result = wait()
+```
+
+**Expected Outcome:**
+- Worker completes with helpful explanation that the tool doesn't exist
+- `wait` returns dict with worker completion
+- Conversation history contains the worker's response
+
+**Validation:**
+- Worker handles invalid requests gracefully
+- No server crashes
+- Worker provides helpful response explaining available tools
+
+---
+
+### Test 10: Error Handling
 **Objective:** Verify that proper error messages are returned for invalid operations.
 
-**Test 6a: Peek on Non-Existent Worker**
+**Test 10a: Resume Non-Existent Worker**
 ```
-peek(worker_id: "00000000-0000-0000-0000-000000000000")
+resume_worker(worker_id: "00000000-0000-0000-0000-000000000000", prompt: "Hello")
 ```
-**Expected:** ToolError with message like "Worker ... not found or not complete"
+**Expected:** Error with message "Worker ... not found. maybe still working"
 
-**Test 6b: Write to Active Worker**
+**Test 10b: Resume Active Worker**
 ```
 # Create worker
-worker_id = create_async_worker(prompt: "Count to 100", timeout: 300.0)
+worker_id = spawn_worker(description: "Slow task", prompt: "Count to 100")
 
-# Immediately try to write (before it completes)
-write_to_worker(worker_id: worker_id, message: "Stop")
+# Immediately try to resume (before it completes)
+resume_worker(worker_id: worker_id, prompt: "Stop")
 ```
-**Expected:** ToolError with message like "Worker ... not found in complete tasks"
+**Expected:** Error with message "Worker ... not found. maybe still working"
+
+**Test 10c: Wait with No Active Workers**
+```
+# After all workers complete
+wait()
+```
+**Expected:** Error with message "No active workers to wait for"
 
 **Validation:**
 - Error messages are clear and actionable
 - Errors don't crash the server
-- Proper ToolError exceptions raised
+
+---
+
+### Test 11: Skill-Guided Batch Workflow
+**Objective:** Verify that the async-workers skill guides agents to properly create multiple workers in parallel.
+
+**Setup:**
+This test is run by invoking the async-workers skill directly from the plugin:
+```
+Skill("async-worker-manager:async-workers")
+```
+
+Then spawn 3 workers for parallel execution:
+```
+mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
+  description: "Create test file 1",
+  prompt: "Create a file at /tmp/async-test-1.txt containing the text 'Worker 1 completed'"
+)
+mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
+  description: "Create test file 2",
+  prompt: "Create a file at /tmp/async-test-2.txt containing the text 'Worker 2 completed'"
+)
+mcp__plugin_async-worker-manager_agent-manager__spawn_worker(
+  description: "Create test file 3",
+  prompt: "Create a file at /tmp/async-test-3.txt containing the text 'Worker 3 completed'"
+)
+
+# Wait for all workers to complete
+result = mcp__plugin_async-worker-manager_agent-manager__wait()
+```
+
+**Expected Behavior:**
+- async-workers skill loads from plugin successfully
+- 3 workers spawn in parallel
+- `wait()` returns dict with all 3 workers completed
+- All 3 files created successfully
+
+**Validation:**
+- ✅ Skill loads and provides correct guidance
+- ✅ 3 workers spawn successfully
+- ✅ All workers complete (permissions auto-approved)
+- ✅ All 3 test files exist with correct content
+- ✅ Batch mode works correctly
 
 ---
 
 ## Test Execution Strategy
 
 1. **Sequential Execution:** Run Tests 1-4 in order (they build on each other)
-2. **Independent Tests:** Run Test 5 and 6 independently
-3. **Cleanup:** No cleanup needed - workers auto-transition states
-4. **Timing:** Allow generous timeouts for worker completion (60-120s)
+2. **Independent Tests:** Run Tests 5-10 independently
+3. **Skill-Based Test:** Run Test 11 independently (validates skill guidance)
+4. **Cleanup:** No cleanup needed - workers auto-transition states
+5. **File Access:** Use Read tool to access conversation history files
 
 ## Success Criteria
 
-✅ All 6 test scenarios pass without errors
+✅ All 11 test scenarios pass without errors
 ✅ Worker creation returns valid UUIDs
 ✅ Wait mechanism works correctly
-✅ Peek retrieves complete output
+✅ File-based output is accessible and parseable
 ✅ Session resumption maintains continuity
-✅ Racing pattern returns first completion
+✅ Batch mode returns all completions
+✅ Agent types work correctly
+✅ Worker options are applied
+✅ Permission auto-approval works correctly
+✅ Workers handle errors gracefully
 ✅ Error messages are clear and helpful
+✅ Skill guides agents for batch workflows
 ✅ No server crashes or hangs
 
 ## Supporting Files
@@ -200,25 +367,63 @@ write_to_worker(worker_id: worker_id, message: "Stop")
 For detailed command syntax and expected response formats, see:
 - `test-scenarios.md` - Full test command reference
 
+## API Reference
+
+### Tools Available
+
+1. **spawn_worker** - Create new worker
+   - description: string (required) - Short 3-5 word description
+   - prompt: string (required) - Detailed instructions
+   - agent_type: string (optional) - "Explore", "general-purpose", or custom
+   - options: dict (optional) - model, temperature, thinking, etc.
+
+2. **wait** - Wait for all active workers
+   - No parameters
+   - Returns: Dict[worker_id, {conversation_history_file_path: path}]
+
+3. **resume_worker** - Resume completed worker
+   - worker_id: string (required)
+   - prompt: string (required)
+   - options: dict (optional)
+
 ## Troubleshooting
 
 **Worker Timeouts:**
-- Default timeout is 60-120s - increase if workers timeout
+- Workers have no timeout by default - they run until completion
 - Check that `claude` is in PATH
-- Verify network connectivity for claude API calls
+- Verify network connectivity for Claude API calls
 
 **Session ID Issues:**
 - Ensure stdout parsing works with `--output-format json`
-- Verify session_id format is "session-XXXXX"
+- Verify session_id is in conversation history file
 
-**Racing Pattern Not Working:**
-- Check that all workers are created before calling wait
-- Verify workers are in active state before wait
+**Permission Issues:**
+- Permissions are auto-approved for /tmp and home directory
+- Workers should complete without manual approval
+
+**File Not Found:**
+- conversation_history_file_path is absolute path
+- Files are in logs/ directory relative to plugin root
+- Use Read tool to access files
 
 ## Version History
 
+- **v0.3.0** (2025-10-24) - Updated for auto-approval and simplified API
+  - Removed approve_permission tool (permissions now auto-approved)
+  - Updated Test 8 to reflect auto-approval behavior
+  - Updated Test 9 for graceful error handling
+  - Updated all expected outcomes to dict-based return format
+  - Removed outdated schema references (WorkerState, CompleteTask with extra fields)
+  - Updated Test 11 for batch workflow validation
+- **v0.2.0** (2025-10-23) - Updated for current API
+  - 11 comprehensive test scenarios
+  - Tests all core MCP tools
+  - Added permission handling tests
+  - Added agent type and options tests
+  - Added failed worker tests
+  - Updated to file-based output
+  - Renamed tools (spawn_worker, resume_worker, wait)
 - **v0.1.0** (2025-10-22) - Initial integration test skill
   - 6 comprehensive test scenarios
-  - Tests all 4 core MCP tools
   - Validates racing pattern and error handling
   - Session resumption verification
