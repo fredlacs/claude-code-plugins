@@ -18,8 +18,9 @@ from fastmcp.exceptions import ToolError
 async def reset_state():
     """Reset global state before/after each test."""
     # Cancel any existing tasks before starting
-    for task_or_result in list(tasks.values()):
-        if isinstance(task_or_result, asyncio.Task) and not task_or_result.done():
+    for task_or_result in tasks:
+        # Only try to cancel real asyncio.Task objects, not Mocks
+        if type(task_or_result).__name__ == 'Task' and not task_or_result.done():
             task_or_result.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task_or_result
@@ -28,8 +29,9 @@ async def reset_state():
     yield
 
     # Cancel any tasks after test completes
-    for task_or_result in list(tasks.values()):
-        if isinstance(task_or_result, asyncio.Task) and not task_or_result.done():
+    for task_or_result in tasks:
+        # Only try to cancel real asyncio.Task objects, not Mocks
+        if type(task_or_result).__name__ == 'Task' and not task_or_result.done():
             task_or_result.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task_or_result
@@ -63,13 +65,11 @@ async def test_spawn_worker_returns_worker_id():
                     "prompt": "test"
                 })
 
-                # Should return string worker_id
-                assert isinstance(result.data, str)
-                # Should have UUID format
-                assert len(result.data) == 36  # UUID length with dashes
+                # Should return int worker_id
+                assert isinstance(result.data, int)
                 # Should have 1 active worker
                 assert len(tasks) == 1
-                assert result.data in tasks
+                assert result.data < len(tasks)
                 assert isinstance(tasks[result.data], asyncio.Task)
 
 
@@ -78,10 +78,10 @@ async def test_spawn_worker_max_workers_enforced():
     """Test that 11th active worker is rejected."""
     # Create 10 active tasks (simple mocks)
     for i in range(10):
-        worker_id = f"worker-{i}"
-        # Create a mock task
+        # Create a mock task that appears active (not done)
         mock_task = Mock(spec=asyncio.Task)
-        tasks[worker_id] = mock_task
+        mock_task.done.return_value = False
+        tasks.append(mock_task)
 
     async with Client(mcp) as client:
         with pytest.raises(ToolError) as exc_info:
@@ -95,23 +95,24 @@ async def test_spawn_worker_max_workers_enforced():
 @pytest.mark.anyio
 async def test_spawn_worker_completed_workers_dont_count():
     """Test that completed workers don't count toward max workers limit."""
-    # Create 10 completed workers
-    for i in range(10):
-        worker_id = f"complete-{i}"
-        tasks[worker_id] = WorkerResult(
-            worker_id=worker_id,
-            output_file=f"/tmp/worker-{i}.json"
-        )
+    # Create 1 completed worker first
+    async def completed_task():
+        return WorkerResult(output_file="/tmp/completed.json")
 
-    # Should still be able to create 10 active workers
+    task = asyncio.create_task(completed_task())
+    await task  # Wait for completion
+    tasks.append(task)
+
+    # Should still be able to create 10 active workers despite having completed one
     with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
         with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
-            # Create a mock process with only async methods where needed
+            # Create a mock process that will stay "active" by sleeping
+            async def slow_communicate():
+                await asyncio.sleep(10)  # Long enough to keep tasks active during test
+                return (json.dumps({"session_id": "test-123"}).encode(), b"")
+
             mock_proc = Mock()
-            mock_proc.communicate = AsyncMock(return_value=(
-                json.dumps({"session_id": "test-123"}).encode(),
-                b""
-            ))
+            mock_proc.communicate = slow_communicate
             mock_proc.returncode = 0
             mock_proc.stdin = Mock()
             mock_proc.stdin.close = Mock(return_value=None)
@@ -124,12 +125,15 @@ async def test_spawn_worker_completed_workers_dont_count():
                         "description": f"Task {i}",
                         "prompt": "test"
                     })
-                    assert isinstance(result.data, str)
+                    assert isinstance(result.data, int)
 
-                # Should have 10 completed + 10 active = 20 total
-                completed_count = sum(1 for t in tasks.values() if isinstance(t, WorkerResult))
-                active_count = sum(1 for t in tasks.values() if isinstance(t, asyncio.Task))
-                assert completed_count == 10
+                # Give tasks a moment to start
+                await asyncio.sleep(0.01)
+
+                # Should have 1 completed + 10 active = 11 total
+                completed_count = sum(1 for t in tasks if isinstance(t, asyncio.Task) and t.done())
+                active_count = sum(1 for t in tasks if isinstance(t, asyncio.Task) and not t.done())
+                assert completed_count == 1
                 assert active_count == 10
 
 
@@ -147,67 +151,64 @@ async def test_wait_no_active_workers():
 @pytest.mark.anyio
 async def test_wait_returns_completed_workers():
     """Test wait() returns completed workers."""
-    # Create a real completed task
-    async def complete_immediately():
+    # Create a task that's active but will complete when waited on
+    async def complete_soon():
+        await asyncio.sleep(0.01)  # Small delay so it's active when added
         return WorkerResult(
-            worker_id="worker-1",
             output_file="/tmp/output.json"
         )
 
-    task = asyncio.create_task(complete_immediately())
-    await task  # Let it complete
-
-    tasks["worker-1"] = task
+    task = asyncio.create_task(complete_soon())
+    tasks.append(task)
 
     async with Client(mcp) as client:
         result = await client.call_tool("wait", {})
 
-        # Should return Dict[str, WorkerResult]
-        assert isinstance(result.data, dict)
-        assert len(result.data) == 1
-        assert "worker-1" in result.data
-        # FastMCP deserializes to Root objects with attribute access
-        # Path is resolved so /tmp -> /private/tmp on macOS
-        assert result.data["worker-1"].output_file.endswith("output.json")
+        # FastMCP returns results in content when there's no output schema
+        # Parse the JSON text content
+        import json
+        content_text = result.content[0].text
+        data = json.loads(content_text)
 
-        # Worker should now be a WorkerResult in tasks
-        assert "worker-1" in tasks
-        assert isinstance(tasks["worker-1"], WorkerResult)
+        # Should return List[WorkerResult | BaseException]
+        assert isinstance(data, list)
+        assert len(data) == 1
+        # Path is resolved so /tmp -> /private/tmp on macOS
+        assert data[0]["output_file"].endswith("output.json")
 
 
 @pytest.mark.anyio
 async def test_wait_multiple_simultaneous_completions():
     """Test wait() returns all tasks that complete simultaneously."""
-    # Create multiple tasks that complete immediately
-    async def complete_immediately(worker_id: str):
+    # Create multiple tasks that complete soon
+    async def complete_soon(worker_id: str):
+        await asyncio.sleep(0.01)  # Small delay so they're active when added
         return WorkerResult(
-            worker_id=worker_id,
             output_file=f"/tmp/{worker_id}.json"
         )
 
-    # Create and complete 3 tasks
-    task1 = asyncio.create_task(complete_immediately("worker-1"))
-    task2 = asyncio.create_task(complete_immediately("worker-2"))
-    task3 = asyncio.create_task(complete_immediately("worker-3"))
-    await asyncio.gather(task1, task2, task3)
+    # Create 3 tasks (don't await - let them stay active)
+    task1 = asyncio.create_task(complete_soon("worker-1"))
+    task2 = asyncio.create_task(complete_soon("worker-2"))
+    task3 = asyncio.create_task(complete_soon("worker-3"))
 
-    tasks["worker-1"] = task1
-    tasks["worker-2"] = task2
-    tasks["worker-3"] = task3
+    tasks.append(task1)
+    tasks.append(task2)
+    tasks.append(task3)
 
     async with Client(mcp) as client:
         result = await client.call_tool("wait", {})
 
-        # Should return Dict[str, WorkerResult] with all 3 completed tasks
-        assert isinstance(result.data, dict)
-        assert len(result.data) == 3
-        assert "worker-1" in result.data
-        assert "worker-2" in result.data
-        assert "worker-3" in result.data
+        # FastMCP returns results in content when there's no output schema
+        # Parse the JSON text content
+        import json
+        content_text = result.content[0].text
+        data = json.loads(content_text)
 
-        # All workers should now be WorkerResult in tasks
-        assert len(tasks) == 3
-        assert all(isinstance(tasks[wid], WorkerResult) for wid in ["worker-1", "worker-2", "worker-3"])
+        # Should return List[WorkerResult | BaseException] with all 3 completed tasks
+        assert isinstance(data, list)
+        assert len(data) == 3
+        assert all(r["output_file"].endswith(".json") for r in data)
 
 
 # --- Test resume_worker ---
@@ -218,23 +219,23 @@ async def test_resume_worker_nonexistent():
     async with Client(mcp) as client:
         with pytest.raises(ToolError) as exc_info:
             await client.call_tool("resume_worker", {
-                "worker_id": "nonexistent",
+                "worker_id": 999,  # Use integer worker_id for list-based design
                 "prompt": "test"
             })
-        assert "not found" in str(exc_info.value)
+        assert "not found" in str(exc_info.value).lower()
 
 
 @pytest.mark.anyio
 async def test_resume_worker_not_completed():
     """Test resuming active worker raises error."""
     task = asyncio.create_task(asyncio.sleep(1000))
-    tasks["worker-1"] = task
+    tasks.append(task)
 
     try:
         async with Client(mcp) as client:
             with pytest.raises(ToolError) as exc_info:
                 await client.call_tool("resume_worker", {
-                    "worker_id": "worker-1",
+                    "worker_id": 0,  # First task in list
                     "prompt": "test"
                 })
             assert "not found" in str(exc_info.value).lower() or "still active" in str(exc_info.value).lower()
@@ -255,11 +256,13 @@ async def test_resume_worker_success():
         temp_file = f.name
 
     try:
-        # Setup a completed worker
-        tasks["worker-1"] = WorkerResult(
-            worker_id="worker-1",
-            output_file=temp_file
-        )
+        # Create a completed task that returns the WorkerResult
+        async def completed_worker():
+            return WorkerResult(output_file=temp_file)
+
+        task = asyncio.create_task(completed_worker())
+        await task  # Wait for completion
+        tasks.append(task)
 
         with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
             with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
@@ -276,13 +279,13 @@ async def test_resume_worker_success():
 
                 async with Client(mcp) as client:
                     await client.call_tool("resume_worker", {
-                        "worker_id": "worker-1",
+                        "worker_id": 0,  # First task in list
                         "prompt": "Follow up"
                     })
 
                     # Worker should transition to ACTIVE
-                    assert "worker-1" in tasks
-                    assert isinstance(tasks["worker-1"], asyncio.Task)
+                    assert len(tasks) == 1
+                    assert isinstance(tasks[0], asyncio.Task)
     finally:
         import os
         os.unlink(temp_file)
@@ -295,12 +298,13 @@ async def test_multiple_workers_concurrent():
     """Test creating multiple workers concurrently."""
     with patch('src.server.shutil.which', return_value='/usr/bin/claude'):
         with patch('src.server.asyncio.create_subprocess_exec') as mock_exec:
-            # Create a mock process
+            # Create a mock process that stays active
+            async def slow_communicate():
+                await asyncio.sleep(10)  # Long enough to keep tasks active
+                return (json.dumps({"session_id": "test-123"}).encode(), b"")
+
             mock_proc = Mock()
-            mock_proc.communicate = AsyncMock(return_value=(
-                json.dumps({"session_id": "test-123"}).encode(),
-                b""
-            ))
+            mock_proc.communicate = slow_communicate
             mock_proc.returncode = 0
             mock_proc.stdin = Mock()
             mock_proc.stdin.close = Mock(return_value=None)
@@ -316,11 +320,15 @@ async def test_multiple_workers_concurrent():
                     })
                     worker_ids.append(result.data)
 
+                # Give tasks a moment to start
+                await asyncio.sleep(0.01)
+
                 assert len(worker_ids) == 3
                 assert len(set(worker_ids)) == 3  # All unique
-                active_count = sum(1 for t in tasks.values() if isinstance(t, asyncio.Task))
+                active_count = sum(1 for t in tasks if isinstance(t, asyncio.Task) and not t.done())
                 assert active_count == 3
-                assert all(wid in tasks for wid in worker_ids)
+                # Verify all worker_ids are valid indices in tasks list
+                assert all(0 <= wid < len(tasks) for wid in worker_ids)
 
 
 @pytest.mark.anyio
@@ -350,7 +358,7 @@ async def test_spawn_worker_with_options():
                     }
                 })
 
-                assert isinstance(result.data, str)
+                assert isinstance(result.data, int)
 
                 # Verify subprocess called with correct args
                 call_args = mock_exec.call_args[0]

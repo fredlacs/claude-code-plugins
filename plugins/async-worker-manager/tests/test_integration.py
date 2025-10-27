@@ -53,8 +53,8 @@ async def test_batch_mode():
 
         print(f"✓ Got results: {len(completed)} completed")
 
-        # Check results - wait() now returns Dict[str, CompleteTask]
-        assert isinstance(completed, dict)
+        # Check results - wait() returns List[WorkerResult | BaseException]
+        assert isinstance(completed, list)
         assert len(completed) >= 1
         print(f"✓ Workers completed")
 
@@ -92,6 +92,7 @@ async def test_sequential_mode():
             result = await client.call_tool("wait", {})
             completed = result.data
 
+            assert isinstance(completed, list)
             assert len(completed) >= 1
             print(f"✓ {task} completed")
 
@@ -126,6 +127,7 @@ async def test_resume_worker():
         result = await client.call_tool("wait", {})
         completed = result.data
 
+        assert isinstance(completed, list)
         assert len(completed) >= 1
         print(f"✓ First completion: {worker_id}")
 
@@ -142,6 +144,7 @@ async def test_resume_worker():
         result = await client.call_tool("wait", {})
         completed = result.data
 
+        assert isinstance(completed, list)
         assert len(completed) >= 1
         print("✓ Second completion")
 
@@ -183,6 +186,7 @@ async def test_resume_worker_without_options_none_bug():
         result = await client.call_tool("wait", {})
         completed = result.data
 
+        assert isinstance(completed, list)
         assert len(completed) >= 1
         print(f"✓ First completion: {worker_id}")
 
@@ -202,6 +206,7 @@ async def test_resume_worker_without_options_none_bug():
         result = await client.call_tool("wait", {})
         completed = result.data
 
+        assert isinstance(completed, list)
         assert len(completed) >= 1
         print("✓ Second completion - bug is FIXED!")
 
