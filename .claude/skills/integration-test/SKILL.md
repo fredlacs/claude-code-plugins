@@ -15,7 +15,7 @@ This skill runs comprehensive integration tests for the async-worker-manager MCP
 
 ## Test Suite Overview
 
-The integration test validates 11 key scenarios:
+The integration test validates 12 key scenarios:
 
 1. **Basic Worker Creation** - Verify worker spawning and ID generation
 2. **Wait for Completion** - Test the wait mechanism
@@ -28,6 +28,7 @@ The integration test validates 11 key scenarios:
 9. **Failed Workers** - Validate error handling and hints
 10. **Error Cases** - Validate error messages for invalid operations
 11. **Skill-Guided Permission Flow** - Verify async-workers skill guides agents to handle permissions correctly
+12. **Batch Error Handling** - Validate mixed success/failure, error JSON format, stderr capture
 
 ## Detailed Test Scenarios
 
@@ -338,17 +339,90 @@ result = mcp__plugin_async-worker-manager_agent-manager__wait()
 
 ---
 
+### Test 12: Batch Mode Error Handling
+**Objective:** Verify that workers handle subprocess failures gracefully, errors are captured in output files with proper JSON format, and wait() returns all workers even when some fail.
+
+**Commands:**
+```python
+# Create 3 workers: success, failure, success
+worker_a = spawn_worker(
+    description: "Success test A",
+    prompt: "Say 'Test A completed successfully'"
+)
+
+worker_b = spawn_worker(
+    description: "Failure test B",
+    prompt: "Use the Bash tool to run this command: bash -c 'echo Error message >&2 && exit 1'"
+)
+
+worker_c = spawn_worker(
+    description: "Success test C",
+    prompt: "Say 'Test C completed successfully'"
+)
+
+# Wait for all workers (should not raise exception)
+result = wait()
+
+# Validate all 3 workers returned
+assert len(result) == 3
+
+# Read and validate Worker A output (success)
+data_a = json.loads(Read(result[worker_a].output_file))
+assert data_a["type"] == "result"
+assert "Test A completed successfully" in data_a["result"]
+
+# Read and validate Worker B output (error)
+data_b = json.loads(Read(result[worker_b].output_file))
+assert "error_exit_code" in data_b
+assert data_b["error_exit_code"] == 1
+assert "Error message" in data_b["error_stderr"]
+
+# Read and validate Worker C output (success)
+data_c = json.loads(Read(result[worker_c].output_file))
+assert data_c["type"] == "result"
+assert "Test C completed successfully" in data_c["result"]
+```
+
+**Expected Behavior:**
+- wait() returns dict with all 3 worker_ids (no exception raised)
+- Worker A output file contains success result
+- Worker B output file contains error JSON with:
+  - `error_exit_code: 1`
+  - `error_stderr: "Error message\n"`
+- Worker C output file contains success result
+
+**Validation:**
+- ✅ wait() returns dict (doesn't raise exception)
+- ✅ All 3 output files exist and are readable
+- ✅ Workers A and C have `type: "result"` (success case from Claude's JSON)
+- ✅ Worker B has `error_exit_code` and `error_stderr` (self-documenting error keys)
+- ✅ Worker B error JSON: `error_exit_code == 1`, stderr contains "Error message"
+- ✅ Error detection: Check for keys starting with `error_`
+- ✅ Batch mode handles mixed success/failure gracefully
+- ✅ Server doesn't crash
+
+**Why This Test Matters:**
+- Validates error-as-data pattern (errors written to files, not raised)
+- Tests batch resilience (one failure doesn't block other workers)
+- Validates error JSON format is complete and useful
+- Tests stderr capture from failed subprocess
+- Ensures wait() uses return_exceptions=True correctly
+- Verifies finally block writes all files even on failure
+
+---
+
 ## Test Execution Strategy
 
 1. **Sequential Execution:** Run Tests 1-4 in order (they build on each other)
 2. **Independent Tests:** Run Tests 5-10 independently
 3. **Skill-Based Test:** Run Test 11 independently (validates skill guidance)
-4. **Cleanup:** No cleanup needed - workers auto-transition states
-5. **File Access:** Use Read tool to access conversation history files
+4. **Error Handling Test:** Run Test 12 independently (validates error capture)
+5. **Cleanup:** No cleanup needed - workers auto-transition states
+6. **File Access:** Use Read tool to access conversation history files
 
 ## Success Criteria
 
-✅ All 11 test scenarios pass without errors
+✅ All 12 test scenarios pass without errors
 ✅ Worker creation returns valid UUIDs
 ✅ Wait mechanism works correctly
 ✅ File-based output is accessible and parseable
@@ -360,6 +434,10 @@ result = mcp__plugin_async-worker-manager_agent-manager__wait()
 ✅ Workers handle errors gracefully
 ✅ Error messages are clear and helpful
 ✅ Skill guides agents for batch workflows
+✅ Error JSON format is complete and correct
+✅ Stderr is captured in error files
+✅ Batch mode handles mixed success/failure
+✅ wait() never raises exceptions with failures
 ✅ No server crashes or hangs
 
 ## Supporting Files
@@ -408,6 +486,14 @@ For detailed command syntax and expected response formats, see:
 
 ## Version History
 
+- **v0.4.0** (2025-10-27) - Added comprehensive error handling test
+  - Added Test 12: Batch Mode Error Handling
+  - Validates error-as-data pattern (errors written to files)
+  - Tests batch resilience with mixed success/failure
+  - Validates error JSON format with exit_code, stderr, error_message
+  - Tests stderr capture from failed subprocesses
+  - Verifies wait() uses return_exceptions=True (no exceptions raised)
+  - Validates finally block file writing
 - **v0.3.0** (2025-10-24) - Updated for auto-approval and simplified API
   - Removed approve_permission tool (permissions now auto-approved)
   - Updated Test 8 to reflect auto-approval behavior

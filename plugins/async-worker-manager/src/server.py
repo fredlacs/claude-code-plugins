@@ -13,7 +13,7 @@ from fastmcp.exceptions import ToolError
 @dataclass
 class WorkerResult:
     worker_id: str
-    output_file: str  # Absolute path to logs/worker-{id}.json
+    output_file: str
 
 
 @dataclass
@@ -27,7 +27,6 @@ class WorkerOptions:
 
 
 tasks: Dict[str, asyncio.Task[WorkerResult] | WorkerResult] = {}
-
 mcp = FastMCP("Async Worker Manager")
 
 
@@ -38,16 +37,12 @@ async def spawn_worker(
     agent_type: Optional[str] = None,
     options: Optional[WorkerOptions] = None,
 ) -> str:
-    """Spawn a Claude worker (non-blocking, resumable). Returns worker_id.
-
-    Args:
-        description: Short task description (3-5 words)
-        prompt: Detailed instructions for the worker
-        agent_type: Optional agent role/persona
-        options: Optional WorkerOptions for model configuration
-    """
+    """Spawn a Claude worker (non-blocking, resumable). Returns worker_id."""
     if sum(isinstance(t, asyncio.Task) for t in tasks.values()) >= 10:
         raise ToolError("Max 10 active workers.")
+
+    if options and (options.temperature < 0.0 or options.temperature > 1.0):
+        raise ToolError("Temperature must be between 0 and 1")
 
     worker_id = str(uuid.uuid4())
     tasks[worker_id] = asyncio.create_task(
@@ -84,12 +79,11 @@ async def wait() -> Dict[str, WorkerResult]:
     active = [t for t in tasks.values() if isinstance(t, asyncio.Task)]
     if not active:
         raise ToolError("No active workers to wait for")
-    await asyncio.gather(*active)
+    await asyncio.gather(*active, return_exceptions=True)
     return _flush_completed_tasks()
 
 
 def _flush_completed_tasks() -> Dict[str, WorkerResult]:
-    """Convert completed Task objects to WorkerResult in-place."""
     completed: Dict[str, WorkerResult] = {}
     for worker_id, task in list(tasks.items()):
         if isinstance(task, asyncio.Task) and task.done():
@@ -106,10 +100,8 @@ async def run_claude_job(
     session_id: Optional[str] = None,
     options: Optional[WorkerOptions] = None,
 ) -> WorkerResult:
-    """Spawn Claude subprocess with Unix domain socket for permission requests."""
     if options is None:
         options = WorkerOptions()
-
     if not shutil.which("claude"):
         raise ToolError("Claude not in PATH")
 
@@ -171,24 +163,32 @@ async def run_claude_job(
 
     try:
         out_bytes, err_bytes = await proc.communicate()
-        output_file.write_text(
-            json.dumps(json.loads(out_bytes.decode("utf-8")), indent=2)
-        )
+        out_decoded = out_bytes.decode("utf-8", errors="replace")
 
         if proc.returncode != 0:
-            raise ToolError(
-                f"Worker {worker_id} failed (code {proc.returncode}): "
-                f"{err_bytes.decode('utf-8')[:200]}"
-            )
+            output_data = {
+                "error_exit_code": proc.returncode,
+                "error_stderr": err_bytes.decode("utf-8", errors="replace"),
+            }
+        else:
+            try:
+                output_data = json.loads(out_decoded)
+            except json.JSONDecodeError:
+                output_data = {"result": out_decoded}
+    except (asyncio.CancelledError, Exception) as e:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        output_data = {"error_exception": f"{e}"}
+    finally:
+        try:
+            output_file.write_text(json.dumps(output_data, indent=2))
+        except Exception:
+            pass
 
-        return WorkerResult(
-            worker_id=worker_id,
-            output_file=str(output_file.absolute()),
-        )
-    except (asyncio.CancelledError, Exception):
-        proc.kill()
-        await proc.wait()
-        raise
+    return WorkerResult(worker_id=worker_id, output_file=str(output_file.resolve()))
 
 
 if __name__ == "__main__":

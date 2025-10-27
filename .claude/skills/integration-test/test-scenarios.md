@@ -16,6 +16,7 @@ Complete reference for manually executing integration tests against the async-wo
 | 8. Permission Handling | `spawn_worker`, `wait` | ~45s | None |
 | 9. Failed Workers | `spawn_worker`, `wait` | ~30s | None |
 | 10. Error Handling | `resume_worker`, `wait` | <5s | None |
+| 12. Batch Error Handling | `spawn_worker`, `wait`, `Read` | ~60s | None |
 
 ---
 
@@ -602,6 +603,266 @@ Good error messages should:
 
 ---
 
+## Test 12: Batch Mode Error Handling
+
+**Objective:** Validate that workers handle subprocess failures gracefully, errors are captured in output files, and wait() returns all workers even when some fail.
+
+### Part 12a: Create Mixed Workers
+
+**Worker A (Success):**
+```json
+{
+  "tool": "mcp__async_worker_manager__spawn_worker",
+  "arguments": {
+    "description": "Success test A",
+    "prompt": "Say 'Test A completed successfully'"
+  }
+}
+```
+Response: `"worker-a-uuid"`
+
+**Worker B (Failure):**
+```json
+{
+  "tool": "mcp__async_worker_manager__spawn_worker",
+  "arguments": {
+    "description": "Failure test B",
+    "prompt": "Use the Bash tool to run this command: bash -c 'echo Error message >&2 && exit 1'"
+  }
+}
+```
+Response: `"worker-b-uuid"`
+
+**Worker C (Success):**
+```json
+{
+  "tool": "mcp__async_worker_manager__spawn_worker",
+  "arguments": {
+    "description": "Success test C",
+    "prompt": "Say 'Test C completed successfully'"
+  }
+}
+```
+Response: `"worker-c-uuid"`
+
+### Part 12b: Wait for All Completions
+
+**Command Syntax:**
+```json
+{
+  "tool": "mcp__async_worker_manager__wait",
+  "arguments": {}
+}
+```
+
+**Expected Response:**
+```json
+{
+  "worker-a-uuid": {
+    "output_file": "/path/to/logs/worker-a-uuid.json"
+  },
+  "worker-b-uuid": {
+    "output_file": "/path/to/logs/worker-b-uuid.json"
+  },
+  "worker-c-uuid": {
+    "output_file": "/path/to/logs/worker-c-uuid.json"
+  }
+}
+```
+
+**Critical:** wait() returns dict with all 3 workers, does NOT raise exception despite worker-b failure.
+
+### Part 12c: Validate Worker A Output (Success)
+
+**Command Syntax:**
+```json
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/path/to/logs/worker-a-uuid.json"
+  }
+}
+```
+
+**Expected Response:**
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "Test A completed successfully",
+  "session_id": "...",
+  "duration_ms": 2000,
+  "num_turns": 1
+}
+```
+
+### Part 12d: Validate Worker B Output (Error)
+
+**Command Syntax:**
+```json
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/path/to/logs/worker-b-uuid.json"
+  }
+}
+```
+
+**Expected Response:**
+```json
+{
+  "error_exit_code": 1,
+  "error_stderr": "Error message\n"
+}
+```
+
+**Key Validations:**
+- `error_exit_code` present (self-documenting error key)
+- `error_exit_code` == 1 (non-zero indicates failure)
+- `error_stderr` contains "Error message" (captured from stderr stream)
+- Keys starting with `error_` indicate failure
+- NO `type`, `result`, or `session_id` fields (error format is minimal)
+
+### Part 12e: Validate Worker C Output (Success)
+
+**Command Syntax:**
+```json
+{
+  "tool": "Read",
+  "arguments": {
+    "file_path": "/path/to/logs/worker-c-uuid.json"
+  }
+}
+```
+
+**Expected Response:**
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "Test C completed successfully",
+  "session_id": "...",
+  "duration_ms": 2000,
+  "num_turns": 1
+}
+```
+
+### Validation Checklist
+
+**Batch Behavior:**
+- [ ] wait() returns dict with all 3 worker_ids
+- [ ] wait() does NOT raise exception despite worker_b failure
+- [ ] All 3 output_files exist and are readable
+- [ ] Dict structure matches expected format
+
+**Success Cases (Workers A & C):**
+- [ ] `type` == "result"
+- [ ] `subtype` == "success"
+- [ ] `result` field contains expected text
+- [ ] `session_id` field present (UUID format)
+- [ ] `duration_ms` and `num_turns` present
+
+**Error Case (Worker B):**
+- [ ] `error_exit_code` present (self-documenting key)
+- [ ] `error_exit_code` == 1 (non-zero)
+- [ ] `error_stderr` field contains "Error message"
+- [ ] Error detection works: any key starts with `error_`
+- [ ] NO `type`, `result`, `session_id`, or success-only fields
+
+**Error Handling Robustness:**
+- [ ] Server doesn't crash
+- [ ] Subsequent operations still work
+- [ ] Error information is complete and useful for debugging
+- [ ] Batch resilience: one failure doesn't block others
+
+### Error JSON Format Reference
+
+**Success Format:**
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "...",
+  "session_id": "...",
+  "duration_ms": 2000,
+  "num_turns": 1,
+  "total_cost_usd": 0.007
+}
+```
+
+**Failure Format (subprocess error):**
+```json
+{
+  "error_exit_code": 1,
+  "error_stderr": "full stderr output"
+}
+```
+
+**Failure Format (exception):**
+```json
+{
+  "error_exception": "CancelledError: ..."
+}
+```
+
+**Error Detection Pattern:**
+```python
+error_keys = [k for k in data.keys() if k.startswith("error_")]
+if error_keys:
+    # Error case - keys are self-documenting
+    if "error_exit_code" in data:
+        print(f"Process failed: {data['error_exit_code']}")
+        print(f"Stderr: {data['error_stderr']}")
+    elif "error_exception" in data:
+        print(f"Exception: {data['error_exception']}")
+else:
+    # Success case
+    print(f"Result: {data['result']}")
+```
+
+### Common Issues
+
+**Worker B doesn't fail:**
+- Bash command syntax might need adjustment for your shell
+- Verify stderr redirection works: `>&2`
+- Check exit code: `&& exit 1`
+- Alternative command: `bash -c 'echo "error" 1>&2; exit 1'`
+
+**wait() raises exception:**
+- Check server implementation uses `return_exceptions=True` in asyncio.gather()
+- Verify run_claude_job() doesn't raise exceptions (returns WorkerResult with error data)
+
+**Error JSON missing fields:**
+- Verify finally block writes output_file even on failure
+- Check stderr capture: `err_bytes.decode("utf-8", errors="replace")`
+- Error keys use `error_` prefix for self-documentation
+
+**All workers succeed unexpectedly:**
+- Worker might handle bash error gracefully and explain it
+- Check that bash command actually fails (test manually first)
+- Verify error isn't caught and converted to success message
+
+### Why This Test Matters
+
+This test validates the entire error handling pipeline:
+
+1. **Error-as-data pattern** - Errors written to files, not raised as exceptions
+2. **Batch resilience** - One worker failure doesn't block other workers from completing
+3. **Self-documenting errors** - Keys starting with `error_` make detection trivial
+4. **Minimal format** - Only essential fields (exit_code, stderr) without bloat
+5. **wait() robustness** - Uses return_exceptions=True, returns all workers
+6. **finally block** - Guarantees file writing even if exception occurs
+7. **Consumer visibility** - Errors are discoverable by reading output files
+
+Without this test, regressions could:
+- Break batch mode (one failure raises exception, blocks all)
+- Lose error information (no stderr, missing exit codes)
+- Make debugging impossible (errors not written to files)
+- Violate error-as-data contract (exceptions instead of structured data)
+- Break self-documenting key pattern (harder to detect errors)
+
+---
+
 ## Full Test Run Script
 
 Execute all tests in sequence:
@@ -675,7 +936,7 @@ call_tool "mcp__async_worker_manager__resume_worker" \
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| Test Pass Rate | 100% | All 11 tests pass |
+| Test Pass Rate | 100% | All 12 tests pass |
 | Worker Creation Time | < 5s | Time to spawn worker |
 | Wait Response Time | < 2s after all complete | Time for wait to return |
 | Session Resumption | 100% | Same session_id maintained |
@@ -721,6 +982,16 @@ call_tool "mcp__async_worker_manager__resume_worker" \
 
 ## Version History
 
+- **v0.4.0** (2025-10-27) - Added comprehensive error handling test
+  - Added Test 12: Batch Mode Error Handling
+  - Validates error-as-data pattern (errors written to files, not raised)
+  - Tests batch resilience with mixed success/failure
+  - Validates error JSON format: type, subtype, exit_code, stderr, error_message, worker_id
+  - Tests stderr capture from failed subprocess
+  - Verifies wait() uses return_exceptions=True (no exceptions raised)
+  - Validates finally block file writing guarantees
+  - Complete command syntax and validation checklists
+  - Troubleshooting guide for common error scenarios
 - **v0.3.0** (2025-10-24) - Major API refactor
   - **BREAKING**: `wait()` now returns `Dict[str, CompleteTask]` instead of `WorkerState`
   - **BREAKING**: Removed `failed` list - failed workers now raise exceptions
