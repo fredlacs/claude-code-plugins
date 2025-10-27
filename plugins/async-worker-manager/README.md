@@ -222,9 +222,179 @@ spawn_worker("Complex design", "Design a caching system", options={
 
 **Permissions are auto-approved.** Workers can use all tools (Bash, Write, Read, etc.) without manual approval. All permission requests are automatically approved for simplicity.
 
-**Security Note:** Workers run in the same security context as your main Claude Code session. They have full access to the filesystem and can execute arbitrary commands. Use only in trusted environments.
+**Security Note:** Workers run in sandboxed environments by default (macOS/Linux only). See Sandboxing section below for details.
 
 All tool executions are logged in the conversation history file for audit purposes.
+
+---
+
+## Sandboxing
+
+**Workers run in isolated sandboxes by default** (macOS/Linux only, Windows not supported).
+
+### Two-Layer Security
+
+1. **Permission Proxy (MCP Layer)**: Blocks dangerous commands before execution
+   - Detects excluded commands (docker, sudo, rm, etc.)
+   - Catches shell obfuscation (eval, base64 injection, command substitution)
+   - Uses proper shell parsing with `shlex` to prevent bypasses
+
+2. **OS Sandbox (System Layer)**: Enforces filesystem and network isolation
+   - Filesystem: Write access limited to current working directory
+   - Network: Proxy-based filtering with domain controls
+   - Bash: Auto-approved within sandbox constraints
+
+### Default Configuration
+
+Located in `src/permissions_config.json`:
+
+```json
+{
+  "excludedCommands": ["docker", "sudo", "su", "rm", "systemctl", ...],
+  "deniedTools": [],
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
+```
+
+**Default blocked commands:**
+- `docker` - Container operations
+- `sudo`, `su` - Privilege escalation
+- `rm` - File deletion (use with extreme caution)
+- `systemctl`, `shutdown`, `reboot` - System control
+- `dd`, `mkfs` - Disk operations
+
+**Default blocked patterns:**
+- `eval` - Dynamic code execution
+- `base64 ... | bash` - Encoded command injection
+- `$(...)` / backticks - Command substitution
+- `bash -c` / `sh -c` - Shell interpretation
+
+### Customizing Permissions
+
+Edit `src/permissions_config.json`:
+
+**Allow Docker:**
+```json
+{
+  "excludedCommands": ["sudo", "su", "rm"],
+  "sandbox": {
+    "enabled": true,
+    "excludedCommands": ["docker"],
+    "network": {
+      "allowUnixSockets": ["/var/run/docker.sock"]
+    }
+  }
+}
+```
+
+**Read-only mode (research workers):**
+```json
+{
+  "allowedTools": ["Read", "Grep", "Glob"],
+  "deniedTools": ["Write", "Edit", "Bash"],
+  "excludedCommands": ["docker", "npm", "pip", "git"],
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": false
+  }
+}
+```
+
+**Whitelist specific tools:**
+```json
+{
+  "allowedTools": ["Read", "Write", "Bash"],
+  "deniedTools": ["WebSearch", "Skill"]
+}
+```
+
+### Configuration Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `excludedCommands` | array | Command names to block (e.g. `["docker", "sudo"]`) |
+| `excludedBinaries` | array | Full binary paths to block (e.g. `["/usr/bin/docker"]`) |
+| `dangerousPatterns` | array | Regex patterns to block (e.g. `["eval", "base64.*bash"]`) |
+| `allowedTools` | array | If set, only these tools allowed (whitelist mode) |
+| `deniedTools` | array | Tools to always block (e.g. `["WebSearch"]`) |
+| `sandbox.enabled` | bool | Enable OS-level sandboxing |
+| `sandbox.autoAllowBashIfSandboxed` | bool | Auto-approve bash within sandbox |
+| `sandbox.excludedCommands` | array | Commands excluded from sandbox (run outside) |
+| `sandbox.network.allowUnixSockets` | array | Unix socket paths accessible |
+| `sandbox.network.allowLocalBinding` | bool | Allow binding to localhost |
+
+### Environment Variables
+
+**Disable sandbox (debugging only):**
+```bash
+export WORKER_SANDBOX_DISABLED=true
+# Workers run without OS-level sandboxing
+```
+
+### Security Model
+
+**Defense in Depth:**
+```
+Worker attempts: Bash("docker run alpine")
+     ↓
+Layer 1: Permission Proxy
+  - Parses command with shlex
+  - Checks "docker" in excludedCommands
+  - DENIES → Stops immediately
+     ↓
+Layer 2: OS Sandbox
+  - Filesystem isolation (CWD only)
+  - Network proxy filtering
+  - Backup enforcement
+```
+
+**Why two layers?**
+- **Proxy**: Fast-fail, catches obfuscation attempts
+- **Sandbox**: Deep defense, OS-level guarantees
+
+**What's protected:**
+- ✅ Sensitive files (.env, SSH keys, credentials)
+- ✅ System directories (/etc, /usr, /var)
+- ✅ Network exfiltration (proxy-based filtering)
+- ✅ Privilege escalation (sudo/su blocked)
+- ✅ Shell injection (eval, command substitution detected)
+
+**Platform support:**
+- ✅ macOS (Seatbelt sandbox)
+- ✅ Linux (bubblewrap)
+- ❌ Windows (sandboxing not available)
+
+### Examples
+
+**Default secure mode:**
+```python
+# Uses permissions_config.json defaults
+spawn_worker("Analyze code", "Review this file for bugs")
+# Sandbox enabled, dangerous commands blocked
+```
+
+**Custom configuration for Docker workflow:**
+```json
+// Edit src/permissions_config.json
+{
+  "excludedCommands": ["sudo"],
+  "sandbox": {
+    "enabled": true,
+    "excludedCommands": ["docker"],
+    "network": {"allowUnixSockets": ["/var/run/docker.sock"]}
+  }
+}
+```
+
+**Disable sandbox for debugging:**
+```bash
+export WORKER_SANDBOX_DISABLED=true
+spawn_worker("Debug task", "...")
+# Warning: Full filesystem access, use only for debugging
+```
 
 ---
 

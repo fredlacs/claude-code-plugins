@@ -9,6 +9,8 @@ from typing import Dict, Optional
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
+PERMISSIONS_CONFIG_PATH = Path(__file__).parent / "permissions_config.json"
+
 
 @dataclass
 class WorkerResult:
@@ -93,6 +95,47 @@ def _flush_completed_tasks() -> Dict[str, WorkerResult]:
     return completed
 
 
+def load_permissions_config() -> dict:
+    """Load permissions config with error handling and fail-closed defaults."""
+    try:
+        if PERMISSIONS_CONFIG_PATH.exists():
+            config = json.loads(PERMISSIONS_CONFIG_PATH.read_text())
+            # Basic validation - ensure sandbox section exists
+            if "sandbox" not in config:
+                config["sandbox"] = {"enabled": True, "autoAllowBashIfSandboxed": True}
+            return config
+    except Exception as e:
+        print(f"WARNING: Failed to load permissions config: {e}")
+
+    # Fail-closed defaults
+    return {
+        "excludedCommands": ["docker", "sudo", "su", "rm"],
+        "sandbox": {
+            "enabled": True,
+            "autoAllowBashIfSandboxed": True
+        }
+    }
+
+
+def _build_sandbox_config() -> dict:
+    """Build sandbox settings from permissions config."""
+    config = load_permissions_config()
+
+    # Start with sandbox section from config
+    sandbox = config.get("sandbox", {}).copy()
+
+    # Add excludedCommands to sandbox settings
+    if "excludedCommands" in config:
+        sandbox["excludedCommands"] = config["excludedCommands"].copy()
+
+    # Environment variable override to disable sandbox (for debugging/special cases)
+    if os.getenv("WORKER_SANDBOX_DISABLED", "").lower() == "true":
+        print("WARNING: Sandbox disabled via WORKER_SANDBOX_DISABLED environment variable")
+        return {"enabled": False}
+
+    return sandbox
+
+
 async def run_claude_job(
     prompt: str,
     worker_id: str,
@@ -140,6 +183,7 @@ async def run_claude_job(
             else None,
             "topP": options.top_p,
             "topK": options.top_k,
+            "sandbox": _build_sandbox_config(),
         }.items()
         if v is not None
     }

@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "description": "Permissions configuration for async workers. Single source of truth for both permission proxy and sandbox settings.",
+  "excludedCommands": [
+    "docker",
+    "sudo",
+    "su",
+    "rm",
+    "systemctl",
+    "shutdown",
+    "reboot",
+    "dd",
+    "mkfs"
+  ],
+  "excludedBinaries": [
+    "/usr/bin/docker",
+    "/bin/su",
+    "/usr/bin/sudo",
+    "/sbin/shutdown",
+    "/sbin/reboot"
+  ],
+  "dangerousPatterns": [
+    "eval",
+    "base64.*bash",
+    "base64.*sh",
+    "bash.*-c",
+    "sh.*-c",
+    "\\$\\("
+  ],
+  "allowedTools": [],
+  "deniedTools": [],
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "network": {
+      "allowUnixSockets": [],
+      "allowLocalBinding": false
+    }
+  }
+}
