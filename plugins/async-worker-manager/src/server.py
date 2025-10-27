@@ -143,6 +143,7 @@ async def run_claude_job(
         }.items()
         if v is not None
     }
+    # TODO: set enabledPlugins based on explicit allowlist https://docs.claude.com/en/docs/claude-code/settings#plugin-settings
     if settings:
         cmd += ["--settings", json.dumps(settings)]
 
