@@ -1,0 +1,17 @@
+{
+  "name": "auto-code-review",
+  "description": "Git commit intercept hook that prompts for code review before committing",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/src/git_commit_intercept.py"
+          }
+        ],
+        "matcher": "Bash"
+      }
+    ]
+  }
+}

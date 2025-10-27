@@ -13,6 +13,11 @@
       "name": "async-worker-manager",
       "source": "./plugins/async-worker-manager",
       "description": "async worker manager"
+    },
+    {
+      "name": "auto-code-review",
+      "source": "./plugins/auto-code-review",
+      "description": "auto code review before git commit"
     }
   ]
 }
