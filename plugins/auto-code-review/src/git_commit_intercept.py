@@ -1,31 +1,10 @@
 #!/usr/bin/env python3
 import json
-from pathlib import Path
 import re
 import sys
 
 
 BYPASS_MARKER = "__SKIP_REVIEW_CHECK__"
-PLUGIN_DEPENDENCIES = [
-    "async-worker-manager@freds-claude-code-plugins",
-    "code-review@claude-code-plugins",
-]
-
-
-def plugin_available(plugin_key: str) -> bool:
-    """Check if plugin is installed and enabled."""
-    settings_file = Path.home() / ".claude" / "settings.json"
-    installed_file = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-    try:
-        with open(settings_file) as f:
-            settings = json.load(f)
-            enabled = settings.get("enabledPlugins", {}).get(plugin_key, False)
-        with open(installed_file) as f:
-            installed = json.load(f)
-            plugin_exists = plugin_key in installed.get("plugins", {})
-        return enabled and plugin_exists
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return False
 
 
 def contains_git_commit(command: str) -> bool:
@@ -72,13 +51,6 @@ After getting the user's response:
 - If they choose "No": Retry the same git commit command with the marker: # __SKIP_REVIEW_CHECK__
 
 Example bypass: git commit -m "fix bug" # __SKIP_REVIEW_CHECK__"""
-
-    # if plugin dependency missing, we override reason for denying tool
-    # TODO: run on a startup hook instead
-    for plugin in PLUGIN_DEPENDENCIES:
-        if not plugin_available(plugin):
-            reason = f"auto-code-review requires plugin {plugin} to be installed"
-            break
 
     output = {
         "hookSpecificOutput": {

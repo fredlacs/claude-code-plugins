@@ -2,6 +2,16 @@
   "name": "auto-code-review",
   "description": "Git commit intercept hook that prompts for code review before committing",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/src/verify_dependencies.py"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
