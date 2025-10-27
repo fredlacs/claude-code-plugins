@@ -19,7 +19,7 @@ class WorkerOptions:
     model: Optional[str] = "claude-sonnet-4-5"
     temperature: Optional[float] = 1.0
     max_tokens: Optional[int] = None
-    thinking: Optional[bool] = False
+    thinking: Optional[bool] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
 
