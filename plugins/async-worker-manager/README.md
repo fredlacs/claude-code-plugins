@@ -33,11 +33,11 @@ id1 = spawn_worker("Research", "Research Python async patterns")
 id2 = spawn_worker("Analyze", "Analyze codebase architecture")
 
 # Wait for ALL to complete
-result = wait()  # Returns Dict[worker_id → CompleteTask]
+result = wait()  # Returns Dict[worker_id → WorkerResult]
 
 # Access results
 for worker_id, worker in result.items():
-    # Read {worker.conversation_history_file_path}
+    # Read {worker.output_file}
     pass
 ```
 
@@ -92,19 +92,19 @@ id = spawn_worker(
 ### wait
 
 ```python
-wait() -> Dict[str, CompleteTask]
+wait() -> Dict[str, WorkerResult]
 ```
 
 Wait for ALL active workers to complete.
 
-**Returns:** Dictionary mapping worker_id to CompleteTask
+**Returns:** Dictionary mapping worker_id to WorkerResult
 ```python
 {
     "worker-id-1": {
-        "conversation_history_file_path": "/absolute/path/to/logs/worker-id-1.json"
+        "output_file": "/absolute/path/to/logs/worker-id-1.json"
     },
     "worker-id-2": {
-        "conversation_history_file_path": "/absolute/path/to/logs/worker-id-2.json"
+        "output_file": "/absolute/path/to/logs/worker-id-2.json"
     }
 }
 ```
@@ -116,16 +116,16 @@ Wait for ALL active workers to complete.
 id1 = spawn_worker("Task 1", "...")
 id2 = spawn_worker("Task 2", "...")
 result = wait()  # Blocks until both complete
-# result = {id1: CompleteTask(...), id2: CompleteTask(...)}
+# result = {id1: WorkerResult(...), id2: WorkerResult(...)}
 
 # Access conversation history
 for worker_id, worker_data in result.items():
-    print(worker_data.conversation_history_file_path)
+    print(worker_data.output_file)
 
 # Sequential mode
 id = spawn_worker("Task", "...")
 result = wait()
-file_path = result[id].conversation_history_file_path
+file_path = result[id].output_file
 
 id2 = spawn_worker("Next", "...")
 result = wait()
@@ -242,7 +242,7 @@ Workers write to `logs/worker-{id}.json` containing:
 ```bash
 # From result dict
 worker_id=$(echo "first_worker_id_here")
-file=$(echo "result[$worker_id].conversation_history_file_path")
+file=$(echo "result[$worker_id].output_file")
 
 # Read full output
 cat logs/worker-{id}.json

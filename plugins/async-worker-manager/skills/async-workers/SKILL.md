@@ -20,9 +20,9 @@ mcp://async_worker_manager/spawn_worker(
 
 # Wait for ALL workers to complete
 mcp://async_worker_manager/wait()
-→ Returns: Dict[worker_id, CompleteTask]
+→ Returns: Dict[worker_id, WorkerResult]
 
-# Access conversation history via result[worker_id].conversation_history_file_path
+# Access conversation history via result[worker_id].output_file
 ```
 
 ## Execution Model
@@ -53,7 +53,7 @@ mcp://async_worker_manager/spawn_worker("Compare", "Compare approaches")
 
 # 2. Wait for ALL to complete
 mcp://async_worker_manager/wait()
-→ Returns: Dict[worker_id, CompleteTask]
+→ Returns: Dict[worker_id, WorkerResult]
 
 # 3. Access results via bash
 ```
@@ -128,7 +128,7 @@ Every worker writes to `logs/worker-{id}.json`:
 }
 ```
 
-Access via `worker.conversation_history_file_path` from completed workers.
+Access via `worker.output_file` from completed workers.
 
 ---
 

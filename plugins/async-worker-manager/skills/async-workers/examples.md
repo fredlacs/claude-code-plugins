@@ -9,7 +9,7 @@ mcp://async_worker_manager/spawn_worker("Task 2", "Find all config files")
 mcp://async_worker_manager/spawn_worker("Task 3", "Analyze project dependencies")
 
 mcp://async_worker_manager/wait()  # Blocks until ALL complete
-→ Returns: Dict[worker_id, CompleteTask] with conversation_history_file_path for each worker
+→ Returns: Dict[worker_id, WorkerResult] with output_file for each worker
 ```
 
 ## 2. Temperature Sweep (Creativity Control)
@@ -87,7 +87,7 @@ mcp://async_worker_manager/spawn_worker("Research", "Explain React hooks in deta
 → Returns: worker_id
 
 mcp://async_worker_manager/wait()
-→ Returns: Dict[worker_id, CompleteTask] with conversation_history_file_path
+→ Returns: Dict[worker_id, WorkerResult] with output_file
 
 # Follow up with same worker (maintains context)
 mcp://async_worker_manager/resume_worker(worker_id, "Now show examples with useEffect")
@@ -131,18 +131,18 @@ worker2 = mcp://async_worker_manager/spawn_worker("Task 2", "Find config files")
 
 # Wait for completion
 result = mcp://async_worker_manager/wait()
-→ Returns: Dict[worker_id, CompleteTask]
+→ Returns: Dict[worker_id, WorkerResult]
 
 # Access conversation history
 for worker_id, task in result.items():
-    file_path = task.conversation_history_file_path
+    file_path = task.output_file
     # Read the file to see worker's output
     Read(file_path=file_path)
 ```
 
 **Key Points:**
-- `wait()` returns a dict mapping worker_id → CompleteTask
-- Each CompleteTask has `conversation_history_file_path` field
+- `wait()` returns a dict mapping worker_id → WorkerResult
+- Each WorkerResult has `output_file` field
 - Files contain full conversation history, costs, and results
 - Permissions are auto-approved - no manual intervention needed
 
@@ -154,10 +154,10 @@ worker_id = mcp://async_worker_manager/spawn_worker(description, prompt, agent_t
 
 # Wait for ALL workers to complete (blocking)
 result = mcp://async_worker_manager/wait()
-→ Returns: Dict[worker_id, CompleteTask]
+→ Returns: Dict[worker_id, WorkerResult]
 
 # Access results
-result[worker_id].conversation_history_file_path
+result[worker_id].output_file
 → Points to: logs/worker-{id}.json
 
 # Resume completed worker
